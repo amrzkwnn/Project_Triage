@@ -1,0 +1,573 @@
+'use client';
+
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import {
+  AlertTriangle,
+  Check,
+  KeyRound,
+  PhoneCall,
+  RefreshCw,
+  ShieldAlert,
+  ShieldCheck,
+  Upload,
+} from 'lucide-react';
+import { BackToHome } from '@/components/BackToHome';
+import { SeniorButton } from '@/components/SeniorButton';
+import { StatusLive } from '@/components/StatusLive';
+import { TrafficLightCard } from '@/components/TrafficLightCard';
+import {
+  SAFE_PHONE_CHECKLIST_STEPS,
+  SAFETY_HABITS,
+  formatChecklistProgress,
+  saveFamilyCodeWord,
+  toggleChecklistStep,
+  validateCodeWord,
+} from '@/lib/scam/habits';
+import { checkText, type ScamCheckOutput } from '@/lib/scam/verdict';
+import { confirmFromTap } from '@/lib/actions/confirmation';
+import { canShowAskFamily, shareItemWithFamily } from '@/lib/actions/sharing';
+import { createDefaultSettings, type Settings } from '@/lib/types';
+import type { Vault } from '@/lib/vault/schema';
+import { createVault } from '@/lib/vault/store';
+
+const MAX_SCAM_TEXT_LENGTH = 5_000;
+const MAX_SCREENSHOT_BYTES = 10 * 1024 * 1024;
+const ALLOWED_SCREENSHOT_TYPES = new Set(['image/jpeg', 'image/png']);
+
+export type ScamShieldPageProps = {
+  initialSettings?: Settings;
+  initialText?: string;
+  initialVerdict?: ScamCheckOutput;
+  initialError?: string;
+  vault?: Vault;
+  onNavigate?: (href: string) => void;
+};
+
+export function ScamShieldPage({
+  initialSettings,
+  initialText = '',
+  initialVerdict,
+  initialError,
+  vault,
+  onNavigate,
+}: ScamShieldPageProps) {
+  const [settings, setSettings] = useState<Settings>(
+    initialSettings ?? createDefaultSettings()
+  );
+  const [messageText, setMessageText] = useState<string>(initialText);
+  const [screenshotName, setScreenshotName] = useState<string | undefined>(
+    undefined
+  );
+  const [verdict, setVerdict] = useState<ScamCheckOutput | undefined>(() => {
+    if (initialVerdict) return initialVerdict;
+    if (initialText.trim().length > 0) return checkText(initialText);
+    return undefined;
+  });
+  const [checkError, setCheckError] = useState<string | undefined>(
+    initialError
+  );
+  const [codeWordInput, setCodeWordInput] = useState<string>(
+    initialSettings?.familyCodeWord ?? ''
+  );
+  const [codeWordError, setCodeWordError] = useState<string | undefined>(
+    undefined
+  );
+  const [codeWordSaved, setCodeWordSaved] = useState<boolean>(false);
+  const [askFamilyConfirmOpen, setAskFamilyConfirmOpen] =
+    useState<boolean>(false);
+  const [statusMessage, setStatusMessage] = useState<string>('');
+
+  const resolvedVault = useMemo(
+    () => vault ?? (typeof window !== 'undefined' ? createVault() : undefined),
+    [vault]
+  );
+
+  const loadSettings = useCallback(async () => {
+    if (!resolvedVault) return;
+    const res = await resolvedVault.getSettings();
+    if (res.ok) {
+      setSettings(res.value);
+      setCodeWordInput(res.value.familyCodeWord ?? '');
+    }
+  }, [resolvedVault]);
+
+  useEffect(() => {
+    if (initialSettings === undefined) {
+      void loadSettings();
+    }
+  }, [initialSettings, loadSettings]);
+
+  const handleBack = (
+    event: React.MouseEvent<HTMLAnchorElement | HTMLButtonElement>
+  ) => {
+    if (onNavigate) {
+      event.preventDefault();
+      onNavigate('/');
+    }
+  };
+
+  const handleRunCheck = () => {
+    setCheckError(undefined);
+    const trimmed = messageText.trim();
+    if (trimmed.length === 0) {
+      setCheckError(
+        'Please paste a message or pick a screenshot first so we can check it.'
+      );
+      setStatusMessage('Please enter a message before checking.');
+      return;
+    }
+    if (messageText.length > MAX_SCAM_TEXT_LENGTH) {
+      setCheckError(
+        'This message is longer than 5,000 characters. Please shorten it and check again.'
+      );
+      setStatusMessage('Message is too long to check.');
+      return;
+    }
+    const result = checkText(messageText);
+    setVerdict(result);
+    setAskFamilyConfirmOpen(false);
+    setStatusMessage(
+      result.value === 'danger'
+        ? 'Check finished: Likely scam. Do not click or pay.'
+        : result.value === 'caution'
+          ? 'Check finished: Be careful and verify first.'
+          : 'Check finished: No warning signs were found.'
+    );
+  };
+
+  const handleScreenshotChange = (
+    event: React.ChangeEvent<HTMLInputElement>
+  ) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    setCheckError(undefined);
+
+    if (!ALLOWED_SCREENSHOT_TYPES.has(file.type)) {
+      setCheckError(
+        'Please choose a JPEG or PNG screenshot up to 10 MB. Your message text is still here.'
+      );
+      setStatusMessage('Unsupported screenshot file.');
+      return;
+    }
+
+    if (file.size > MAX_SCREENSHOT_BYTES) {
+      setCheckError(
+        'That screenshot is larger than 10 MB. Please choose a smaller JPEG or PNG screenshot.'
+      );
+      setStatusMessage('Screenshot is larger than 10 MB.');
+      return;
+    }
+
+    if (file.size === 0) {
+      setCheckError(
+        'We could not read that screenshot. Please retake the screenshot or paste the message text.'
+      );
+      setStatusMessage('Screenshot could not be read.');
+      return;
+    }
+
+    setScreenshotName(file.name);
+    setStatusMessage(
+      `Screenshot "${file.name}" is ready. Tap "Is This Safe?" to check.`
+    );
+  };
+
+  const handleSaveCodeWord = async (event: React.FormEvent) => {
+    event.preventDefault();
+    setCodeWordError(undefined);
+    setCodeWordSaved(false);
+
+    const validated = validateCodeWord(codeWordInput);
+    if (!validated.ok) {
+      const msg =
+        validated.error === 'empty'
+          ? 'Please enter a family code word before saving.'
+          : 'Please keep your family code word to 50 characters or fewer.';
+      setCodeWordError(msg);
+      setStatusMessage(msg);
+      return;
+    }
+
+    if (!resolvedVault) {
+      setSettings((prev) => ({ ...prev, familyCodeWord: validated.value }));
+      setCodeWordSaved(true);
+      setStatusMessage('Your family secret code word was saved.');
+      return;
+    }
+
+    const res = await saveFamilyCodeWord(
+      resolvedVault,
+      settings,
+      validated.value
+    );
+    if (!res.ok) {
+      setCodeWordError(res.error.message);
+      setStatusMessage(res.error.message);
+      return;
+    }
+
+    setSettings(res.value);
+    setCodeWordSaved(true);
+    setStatusMessage('Your family secret code word was saved.');
+  };
+
+  const handleToggleChecklist = async (stepId: string) => {
+    const nextDone = !settings.checklist[stepId];
+    if (!resolvedVault) {
+      const nextChecklist = { ...settings.checklist, [stepId]: nextDone };
+      setSettings((prev) => ({ ...prev, checklist: nextChecklist }));
+      setStatusMessage(formatChecklistProgress(nextChecklist));
+      return;
+    }
+
+    const res = await toggleChecklistStep(
+      resolvedVault,
+      settings,
+      stepId,
+      nextDone
+    );
+    if (!res.ok) {
+      setSettings(res.error.settings);
+      setStatusMessage(res.error.message);
+      return;
+    }
+
+    setSettings(res.value.settings);
+    setStatusMessage(res.value.progressText);
+  };
+
+  const handleConfirmAskFamily = async () => {
+    const actionId = 'scam-shield-ask-family';
+    const confirmation = confirmFromTap(actionId);
+    const recipient = settings.familyMembers[0]?.name ?? 'Trusted Family';
+
+    if (!resolvedVault) {
+      setAskFamilyConfirmOpen(false);
+      setStatusMessage(`Shared this safety check summary with ${recipient}.`);
+      return;
+    }
+
+    const shareRes = await shareItemWithFamily({
+      item: {
+        id: 'scam-check-current',
+        source: 'smsPaste',
+        text: messageText,
+        attachments: [],
+        receivedAt: new Date().toISOString(),
+        group: 'Others',
+        priority: 'Important',
+        tier: 3,
+        confidence: 0.9,
+        status: 'ok',
+      },
+      recipient,
+      settings,
+      confirmation,
+      actionId,
+      vault: resolvedVault,
+      sendTransport: async () => ({ ok: true, value: undefined }),
+    });
+
+    if (!shareRes.ok) {
+      setStatusMessage(shareRes.error.message);
+      return;
+    }
+
+    setAskFamilyConfirmOpen(false);
+    setStatusMessage(`Shared this safety check summary with ${recipient}.`);
+  };
+
+  const checklistProgress = formatChecklistProgress(settings.checklist);
+  const canShareWithFamily = canShowAskFamily(settings);
+
+  return (
+    <div className="space-y-8">
+      <BackToHome onClick={handleBack} />
+
+      <section className="space-y-2">
+        <h1 className="text-[28px] font-bold leading-tight text-[#111827]">
+          Scam Shield
+        </h1>
+        <p className="text-[20px] leading-relaxed text-[#111827]">
+          Paste a suspicious message or choose a screenshot to check for scam
+          warning signs before you click or pay.
+        </p>
+      </section>
+
+      <StatusLive message={statusMessage} />
+
+      {/* Message & Screenshot Checker */}
+      <section
+        aria-labelledby="scam-check-heading"
+        data-card="true"
+        className="rounded-2xl border-2 border-[#111827] bg-white p-5 space-y-5"
+      >
+        <h2
+          id="scam-check-heading"
+          className="text-[24px] font-bold text-[#111827]"
+        >
+          Check a Message or Screenshot
+        </h2>
+
+        <div className="space-y-2">
+          <label
+            htmlFor="scam-message-input"
+            className="block text-[18px] font-semibold text-[#111827]"
+          >
+            Paste the message here (up to 5,000 characters)
+          </label>
+          <textarea
+            id="scam-message-input"
+            rows={5}
+            maxLength={MAX_SCAM_TEXT_LENGTH}
+            value={messageText}
+            onChange={(e) => setMessageText(e.target.value)}
+            placeholder="Paste the text message, WhatsApp note, or email here..."
+            className="w-full rounded-xl border-2 border-[#111827] bg-[#FAF9F6] p-4 text-[18px] text-[#111827]"
+          />
+        </div>
+
+        <div className="space-y-2">
+          <label
+            htmlFor="scam-screenshot-input"
+            className="inline-flex min-h-[56px] cursor-pointer items-center gap-3 rounded-xl border-2 border-[#111827] bg-[#FAF9F6] px-4 py-3 text-[18px] font-semibold text-[#111827]"
+          >
+            <span aria-hidden="true" className="inline-flex shrink-0">
+              <Upload size={20} />
+            </span>
+            <span>Choose Screenshot (JPEG or PNG, up to 10 MB)</span>
+          </label>
+          <input
+            id="scam-screenshot-input"
+            type="file"
+            accept="image/jpeg,image/png"
+            onChange={handleScreenshotChange}
+            className="sr-only"
+          />
+          {screenshotName ? (
+            <p className="text-[18px] font-medium text-[#115E59]">
+              Selected screenshot: {screenshotName}
+            </p>
+          ) : null}
+        </div>
+
+        <div className="flex flex-wrap gap-4">
+          <SeniorButton
+            variant="primary"
+            icon={<ShieldAlert size={22} />}
+            onClick={handleRunCheck}
+          >
+            Is This Safe?
+          </SeniorButton>
+        </div>
+
+        {checkError ? (
+          <div
+            role="alert"
+            className="rounded-xl border-2 border-[#BE123C] bg-[#FFF1F2] p-4 space-y-3"
+          >
+            <p className="flex items-start gap-2 text-[18px] font-semibold text-[#881337]">
+              <span aria-hidden="true" className="mt-0.5 inline-flex shrink-0">
+                <AlertTriangle size={22} />
+              </span>
+              <span>{checkError}</span>
+            </p>
+            <SeniorButton
+              variant="warn"
+              icon={<RefreshCw size={20} />}
+              onClick={handleRunCheck}
+            >
+              Try Again
+            </SeniorButton>
+          </div>
+        ) : null}
+
+        {verdict ? (
+          <div className="space-y-4">
+            <TrafficLightCard
+              verdict={verdict}
+              showAskFamily={verdict.showAskFamily && canShareWithFamily}
+              onAskFamily={
+                verdict.showAskFamily && canShareWithFamily
+                  ? () => setAskFamilyConfirmOpen(true)
+                  : undefined
+              }
+            />
+
+            {askFamilyConfirmOpen ? (
+              <div
+                role="region"
+                aria-label="Confirm sharing with family"
+                className="rounded-xl border-2 border-[#0F766E] bg-[#F0FDFA] p-4 space-y-3"
+              >
+                <p className="text-[20px] font-semibold text-[#111827]">
+                  Send a short summary of this message to your trusted family
+                  member to double-check? Your family code word will never be
+                  included.
+                </p>
+                <div className="flex flex-wrap gap-4">
+                  <SeniorButton
+                    variant="primary"
+                    icon={<Check size={20} />}
+                    onClick={() => void handleConfirmAskFamily()}
+                  >
+                    Confirm Share with Family
+                  </SeniorButton>
+                  <SeniorButton
+                    variant="secondary"
+                    onClick={() => setAskFamilyConfirmOpen(false)}
+                  >
+                    Cancel
+                  </SeniorButton>
+                </div>
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+      </section>
+
+      {/* 4 Safety Habits displayed together */}
+      <section aria-labelledby="habits-heading" className="space-y-4">
+        <h2 id="habits-heading" className="text-[24px] font-bold text-[#111827]">
+          4 Safety Habits
+        </h2>
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+          {SAFETY_HABITS.map((habit) => (
+            <article
+              key={habit.id}
+              data-card="true"
+              className="rounded-2xl border-2 border-[#0F766E] bg-white p-4 space-y-2"
+            >
+              <h3 className="flex items-center gap-2 text-[20px] font-bold text-[#115E59]">
+                <span aria-hidden="true" className="inline-flex shrink-0">
+                  <ShieldCheck size={22} />
+                </span>
+                <span>{habit.title}</span>
+              </h3>
+              <p className="text-[18px] leading-snug text-[#111827]">
+                {habit.description}
+              </p>
+            </article>
+          ))}
+        </div>
+      </section>
+
+      {/* Family Secret Code Word */}
+      <section
+        aria-labelledby="codeword-heading"
+        data-card="true"
+        className="rounded-2xl border-2 border-[#111827] bg-white p-5 space-y-4"
+      >
+        <h2
+          id="codeword-heading"
+          className="flex items-center gap-2 text-[24px] font-bold text-[#111827]"
+        >
+          <span aria-hidden="true" className="inline-flex shrink-0">
+            <KeyRound size={24} />
+          </span>
+          <span>Family Secret Code Word</span>
+        </h2>
+        <p className="text-[18px] leading-relaxed text-[#111827]">
+          Agree on a secret word with your family. If someone calls asking for
+          urgent money, ask them for this word first.
+        </p>
+
+        <form onSubmit={(e) => void handleSaveCodeWord(e)} className="space-y-4">
+          <div className="space-y-2">
+            <label
+              htmlFor="family-codeword-input"
+              className="block text-[18px] font-semibold text-[#111827]"
+            >
+              Your Secret Code Word (1 to 50 characters)
+            </label>
+            <input
+              id="family-codeword-input"
+              type="text"
+              maxLength={50}
+              value={codeWordInput}
+              onChange={(e) => setCodeWordInput(e.target.value)}
+              placeholder="For example: Mango Tree"
+              className="w-full min-h-[56px] rounded-xl border-2 border-[#111827] bg-[#FAF9F6] px-4 py-3 text-[18px] text-[#111827]"
+            />
+          </div>
+
+          {codeWordError ? (
+            <p role="alert" className="text-[18px] font-semibold text-[#881337]">
+              {codeWordError}
+            </p>
+          ) : null}
+
+          {codeWordSaved ? (
+            <p role="status" className="text-[18px] font-semibold text-[#14532D]">
+              Saved on this device. Your code word is never sent outside this
+              device.
+            </p>
+          ) : null}
+
+          <SeniorButton type="submit" variant="primary" icon={<Check size={20} />}>
+            Save Family Code Word
+          </SeniorButton>
+        </form>
+      </section>
+
+      {/* Safe Phone Checklist */}
+      <section
+        aria-labelledby="checklist-heading"
+        data-card="true"
+        className="rounded-2xl border-2 border-[#111827] bg-white p-5 space-y-4"
+      >
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <h2
+            id="checklist-heading"
+            className="flex items-center gap-2 text-[24px] font-bold text-[#111827]"
+          >
+            <span aria-hidden="true" className="inline-flex shrink-0">
+              <PhoneCall size={24} />
+            </span>
+            <span>Safe Phone Checklist</span>
+          </h2>
+          <span
+            data-badge="true"
+            className="inline-flex items-center gap-2 rounded-lg border-2 border-[#0F766E] bg-[#F0FDFA] px-3 py-1.5 text-[18px] font-bold text-[#115E59]"
+          >
+            <span aria-hidden="true" className="inline-flex shrink-0">
+              <Check size={20} />
+            </span>
+            <span>{checklistProgress}</span>
+          </span>
+        </div>
+
+        <ul className="space-y-4">
+          {SAFE_PHONE_CHECKLIST_STEPS.map((step) => {
+            const done = settings.checklist[step.id] === true;
+            return (
+              <li
+                key={step.id}
+                className="flex flex-wrap items-center justify-between gap-4 rounded-xl border-2 border-[#111827] bg-[#FAF9F6] p-4"
+              >
+                <div className="space-y-1 flex-1 min-w-[200px]">
+                  <p className="text-[20px] font-bold text-[#111827]">
+                    {step.title}
+                  </p>
+                  <p className="text-[18px] text-[#111827]">
+                    {step.description}
+                  </p>
+                </div>
+                <SeniorButton
+                  variant={done ? 'safe' : 'secondary'}
+                  aria-pressed={done}
+                  icon={<Check size={20} />}
+                  onClick={() => void handleToggleChecklist(step.id)}
+                >
+                  {done ? 'Completed' : 'Mark Done'}
+                </SeniorButton>
+              </li>
+            );
+          })}
+        </ul>
+      </section>
+    </div>
+  );
+}
+
+export default ScamShieldPage;
