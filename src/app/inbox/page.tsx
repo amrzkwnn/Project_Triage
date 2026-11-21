@@ -123,6 +123,107 @@ const APPLE_SHORTCUT_STEPS = [
   },
 ] as const;
 
+export function evaluateInitialQuery(query: string | undefined): {
+  draft?: InboxItemDraft;
+  error?: string;
+} {
+  if (!query || query.trim().length === 0 || query === '?') {
+    return {};
+  }
+  const parsed = parseIngestQuery(query);
+  if (parsed.ok) {
+    return { draft: parsed.value };
+  }
+  return { error: parsed.error.message };
+}
+
+function bytesToBase64(bytes: Uint8Array): string {
+  let binary = '';
+  for (let i = 0; i < bytes.length; i += 1) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return typeof btoa === 'function' ? btoa(binary) : '';
+}
+
+export async function ingestInboxDraftWithConsent(params: {
+  draft: InboxItemDraft;
+  settings: Settings;
+  vault?: Pick<Vault, 'putItem' | 'appendAudit'>;
+}): Promise<
+  | { ok: true; item: InboxItem }
+  | { ok: false; errorMessage: string }
+> {
+  const { draft, settings, vault } = params;
+  const source = normalizeSource(draft.source);
+  if (!source) {
+    return {
+      ok: false,
+      errorMessage:
+        'This message source could not be recognized. Please pick a supported source.',
+    };
+  }
+
+  const decision = admit(settings, { source });
+  if (!decision.admit) {
+    return {
+      ok: false,
+      errorMessage: decision.message,
+    };
+  }
+
+  const itemId = `msg-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+  const auditVault = vault ?? {
+    appendAudit: async () => ({ ok: true as const, value: undefined }),
+  };
+
+  const analyzed = await analyze(
+    { ...draft, id: itemId, source },
+    settings,
+    {
+      vault: auditVault,
+      ruleCtx: { familyMembers: settings.familyMembers },
+    }
+  );
+
+  if (!analyzed.ok) {
+    return {
+      ok: false,
+      errorMessage: analyzed.error.message,
+    };
+  }
+
+  const { analysis, tier } = analyzed.value;
+  const item: InboxItem = {
+    id: itemId,
+    source,
+    ...(draft.sender ? { sender: draft.sender } : {}),
+    text: draft.text,
+    attachments: draft.attachments,
+    receivedAt: draft.receivedAt,
+    group: analysis.group,
+    priority: analysis.priority,
+    summary: analysis.summary,
+    ...(analysis.detectedEvent ? { detectedEvent: analysis.detectedEvent } : {}),
+    ...(analysis.verdict ? { scamWarning: analysis.verdict } : {}),
+    tier,
+    confidence: analysis.confidence,
+    status: 'ok',
+    proposals: analysis.proposals,
+  };
+
+  if (vault) {
+    const putRes = await vault.putItem(item);
+    if (!putRes.ok) {
+      return {
+        ok: false,
+        errorMessage: putRes.error.message,
+      };
+    }
+  }
+
+  return { ok: true, item };
+}
+
 export function UnifiedInboxPage({
   initialSettings,
   initialItems,
@@ -146,16 +247,10 @@ export function UnifiedInboxPage({
   >(() => new Set());
   const [pendingQueryDraft, setPendingQueryDraft] = useState<
     InboxItemDraft | undefined
-  >(() => {
-    if (!initialQuery) return undefined;
-    const parsed = parseIngestQuery(initialQuery);
-    return parsed.ok ? parsed.value : undefined;
-  });
-  const [queryError, setQueryError] = useState<string | undefined>(() => {
-    if (!initialQuery) return undefined;
-    const parsed = parseIngestQuery(initialQuery);
-    return parsed.ok ? undefined : parsed.error.message;
-  });
+  >(() => evaluateInitialQuery(initialQuery).draft);
+  const [queryError, setQueryError] = useState<string | undefined>(
+    () => evaluateInitialQuery(initialQuery).error
+  );
   const [statusMessage, setStatusMessage] = useState<string>('');
   const [actionError, setActionError] = useState<string | undefined>(undefined);
   const [pendingFamilyItemId, setPendingFamilyItemId] = useState<
@@ -188,19 +283,16 @@ export function UnifiedInboxPage({
   }, [initialSettings, initialItems, loadData]);
 
   useEffect(() => {
-    if (
-      initialQuery === undefined &&
-      typeof window !== 'undefined' &&
-      window.location.search.length > 1
-    ) {
-      const parsed = parseIngestQuery(window.location.search);
-      if (parsed.ok) {
-        setPendingQueryDraft(parsed.value);
-        setQueryError(undefined);
-      } else {
-        setPendingQueryDraft(undefined);
-        setQueryError(parsed.error.message);
-      }
+    if (initialQuery !== undefined) {
+      const evaluated = evaluateInitialQuery(initialQuery);
+      setPendingQueryDraft(evaluated.draft);
+      setQueryError(evaluated.error);
+      return;
+    }
+    if (typeof window !== 'undefined') {
+      const evaluated = evaluateInitialQuery(window.location.search);
+      setPendingQueryDraft(evaluated.draft);
+      setQueryError(evaluated.error);
     }
   }, [initialQuery]);
 
@@ -220,80 +312,31 @@ export function UnifiedInboxPage({
     return filterByTab(items, activeTab);
   }, [items, activeTab]);
 
-  const ingestDraft = async (draft: InboxItemDraft) => {
+  const ingestDraft = async (draft: InboxItemDraft): Promise<boolean> => {
     setActionError(undefined);
-    const source = normalizeSource(draft.source);
-    if (!source) {
-      setActionError(
-        'This message source could not be recognized. Please pick a supported source.'
-      );
-      return;
-    }
-
-    const decision = admit(settings, { source });
-    if (!decision.admit) {
-      setActionError(decision.message);
-      setStatusMessage(decision.message);
-      return;
-    }
-
-    const itemId = `msg-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
-    const auditVault = resolvedVault ?? {
-      appendAudit: async () => ({ ok: true as const, value: undefined }),
-    };
-
-    const analyzed = await analyze(
-      { ...draft, id: itemId, source },
+    const result = await ingestInboxDraftWithConsent({
+      draft,
       settings,
-      {
-        vault: auditVault,
-        ruleCtx: { familyMembers: settings.familyMembers },
-      }
-    );
+      vault: resolvedVault,
+    });
 
-    if (!analyzed.ok) {
-      setActionError(analyzed.error.message);
-      setStatusMessage(analyzed.error.message);
-      return;
+    if (!result.ok) {
+      setActionError(result.errorMessage);
+      setStatusMessage(result.errorMessage);
+      return false;
     }
 
-    const { analysis, tier } = analyzed.value;
-    const item: InboxItem = {
-      id: itemId,
-      source,
-      ...(draft.sender ? { sender: draft.sender } : {}),
-      text: draft.text,
-      attachments: draft.attachments,
-      receivedAt: draft.receivedAt,
-      group: analysis.group,
-      priority: analysis.priority,
-      summary: analysis.summary,
-      ...(analysis.detectedEvent
-        ? { detectedEvent: analysis.detectedEvent }
-        : {}),
-      ...(analysis.verdict ? { scamWarning: analysis.verdict } : {}),
-      tier,
-      confidence: analysis.confidence,
-      status: 'ok',
-      proposals: analysis.proposals,
-    };
-
-    if (resolvedVault) {
-      const putRes = await resolvedVault.putItem(item);
-      if (!putRes.ok) {
-        setActionError(putRes.error.message);
-        return;
-      }
-    }
-
-    setItems((prev) => [item, ...prev]);
+    setItems((prev) => [result.item, ...prev]);
     setStatusMessage('Message added to your Unified Inbox.');
+    return true;
   };
 
   const handleConfirmQueryDraft = async () => {
     if (!pendingQueryDraft) return;
-    await ingestDraft(pendingQueryDraft);
-    setPendingQueryDraft(undefined);
+    const ok = await ingestDraft(pendingQueryDraft);
+    if (ok) {
+      setPendingQueryDraft(undefined);
+    }
   };
 
   const handleSaveManualPaste = async (event: React.FormEvent) => {
@@ -302,16 +345,18 @@ export function UnifiedInboxPage({
       setActionError('Please paste a message before saving.');
       return;
     }
-    await ingestDraft({
+    const ok = await ingestDraft({
       source: pasteSource,
       sender: pasteSender.trim() || undefined,
       text: pasteText,
       attachments: [],
       receivedAt: new Date().toISOString(),
     });
-    setPasteText('');
-    setPasteSender('');
-    setShowManualForm(false);
+    if (ok) {
+      setPasteText('');
+      setPasteSender('');
+      setShowManualForm(false);
+    }
   };
 
   const handlePrescriptionPhotoPick = async (
@@ -320,6 +365,17 @@ export function UnifiedInboxPage({
     const file = event.target.files?.[0];
     if (!file) return;
     setActionError(undefined);
+
+    let dataBase64: string | undefined;
+    try {
+      const buf = await file.arrayBuffer();
+      const encoded = bytesToBase64(new Uint8Array(buf));
+      if (encoded.length > 0) {
+        dataBase64 = encoded;
+      }
+    } catch {
+      dataBase64 = undefined;
+    }
 
     const targetVault = resolvedVault ?? {
       putItem: async () => ({ ok: true as const, value: undefined }),
@@ -331,6 +387,7 @@ export function UnifiedInboxPage({
         mime: file.type || 'image/jpeg',
         name: file.name,
         size: file.size,
+        ...(dataBase64 ? { dataBase64 } : {}),
       },
       extractedText: rxText,
       ocrConfidence: rxText.trim().length > 0 ? 0.85 : 0.3,

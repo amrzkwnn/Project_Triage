@@ -73,6 +73,66 @@ function renderCategoryIcon(category: CalendarCategory): React.ReactNode {
   }
 }
 
+export async function applyCandidateDecisionWithPersistence(params: {
+  candidate: Candidate;
+  decision: 'keep' | 'skip' | 'keep-both';
+  existingEvents: readonly CalendarEvent[];
+  vault?: Pick<Vault, 'putEvent'>;
+}): Promise<
+  | { ok: true; nextEvents: CalendarEvent[]; statusMessage: string }
+  | { ok: false; errorMessage: string }
+> {
+  const { candidate, decision, existingEvents, vault } = params;
+
+  if (decision === 'skip') {
+    return {
+      ok: true,
+      nextEvents: [...existingEvents],
+      statusMessage: `Skipped "${candidate.title}".`,
+    };
+  }
+
+  const reviewed = reviewCandidates({
+    existing: existingEvents,
+    pageConfidence: 0.9,
+    candidates: [candidate],
+    decisions: [
+      {
+        candidateId: candidate.id,
+        decision,
+        ...(candidate.dateConfirmed ? { confirmedDate: candidate.date } : {}),
+      },
+    ],
+  });
+
+  if (reviewed.lowConfidenceRejected) {
+    return {
+      ok: false,
+      errorMessage:
+        'Please confirm this date before keeping the event on your calendar.',
+    };
+  }
+
+  const added = reviewed.events.slice(existingEvents.length);
+  if (vault) {
+    for (const ev of added) {
+      const putRes = await vault.putEvent(ev);
+      if (!putRes.ok) {
+        return {
+          ok: false,
+          errorMessage: putRes.error.message,
+        };
+      }
+    }
+  }
+
+  return {
+    ok: true,
+    nextEvents: reviewed.events,
+    statusMessage: `Kept "${candidate.title}" on your calendar.`,
+  };
+}
+
 export type CalendarPageProps = {
   initialSettings?: Settings;
   initialEvents?: CalendarEvent[];
@@ -393,35 +453,23 @@ export function CalendarPage({
     decision: 'keep' | 'skip' | 'keep-both'
   ) => {
     if (!currentCandidate) return;
-    if (decision !== 'skip') {
-      const reviewed = reviewCandidates({
-        existing: events,
-        pageConfidence: 0.9,
-        candidates: [currentCandidate],
-        decisions: [
-          {
-            candidateId: currentCandidate.id,
-            decision,
-            ...(currentCandidate.dateConfirmed
-              ? { confirmedDate: currentCandidate.date }
-              : {}),
-          },
-        ],
-      });
-      if (!reviewed.lowConfidenceRejected) {
-        const added = reviewed.events.slice(events.length);
-        for (const ev of added) {
-          if (resolvedVault) {
-            await resolvedVault.putEvent(ev);
-          }
-        }
-        setEvents(reviewed.events);
-        setStatusMessage(`Kept "${currentCandidate.title}" on your calendar.`);
-      }
-    } else {
-      setStatusMessage(`Skipped "${currentCandidate.title}".`);
+    setSnapError(undefined);
+
+    const outcome = await applyCandidateDecisionWithPersistence({
+      candidate: currentCandidate,
+      decision,
+      existingEvents: events,
+      vault: resolvedVault,
+    });
+
+    if (!outcome.ok) {
+      setSnapError(outcome.errorMessage);
+      setStatusMessage(outcome.errorMessage);
+      return;
     }
 
+    setEvents(outcome.nextEvents);
+    setStatusMessage(outcome.statusMessage);
     const remaining = snapQueue.slice(1);
     setSnapQueue(remaining);
     setConfirmDateInput(remaining[0]?.date ?? '');

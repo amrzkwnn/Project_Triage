@@ -9,11 +9,22 @@ import {
 } from '@/lib/types';
 import { HomeHub } from '@/app/page';
 import { MyDataPage } from '@/app/my-data/page';
-import { ScamShieldPage } from '@/app/scam-shield/page';
+import {
+  ScamShieldPage,
+  UNREADABLE_SCREENSHOT_MESSAGE,
+  evaluateScamCheckInput,
+} from '@/app/scam-shield/page';
 import { PhotoHelperPage } from '@/app/photo-helper/page';
-import { UnifiedInboxPage } from '@/app/inbox/page';
+import {
+  UnifiedInboxPage,
+  evaluateInitialQuery,
+  ingestInboxDraftWithConsent,
+} from '@/app/inbox/page';
 import { AiMediaCheckPage } from '@/app/media-check/page';
-import { CalendarPage } from '@/app/calendar/page';
+import {
+  CalendarPage,
+  applyCandidateDecisionWithPersistence,
+} from '@/app/calendar/page';
 
 const BANNED_JARGON =
   /\b(sync|token|api|cache|error code|stack trace|exception|indexeddb|oauth|webhook|regex)\b/i;
@@ -410,5 +421,153 @@ describe('Accessibility, Touch Targets, Dual-Modality Badges, Copy & Bundle Safe
         /\b(AI_API_KEY|GEMINI_API_KEY)\b/
       );
     }
+  });
+
+  it('Fix Round 1 regressions: screenshot-only scam check, calendar putEvent failure, inbox consent/storage failure, and query re-evaluation', async () => {
+    // 1. ScamShield screenshot-only: readable OCR -> verdict; unreadable -> no verdict + retake/crop prompt
+    const readableShot = evaluateScamCheckInput({
+      messageText: '',
+      screenshotName: 'bank-alert.png',
+      screenshotOcrText:
+        'URGENT: Pay RM500 right now and do not tell your family!',
+    });
+    expect(readableShot.ok).toBe(true);
+    if (readableShot.ok) {
+      expect(readableShot.verdict.value).toBe('danger');
+    }
+
+    const unreadableShot = evaluateScamCheckInput({
+      messageText: '',
+      screenshotName: 'blurry.jpg',
+      screenshotOcrText: '   ',
+    });
+    expect(unreadableShot.ok).toBe(false);
+    if (!unreadableShot.ok) {
+      expect(unreadableShot.kind).toBe('unreadable-screenshot');
+      expect(unreadableShot.message).toBe(UNREADABLE_SCREENSHOT_MESSAGE);
+      expect(unreadableShot.message).not.toMatch(BANNED_JARGON);
+    }
+
+    const shotPageHtml = renderToStaticMarkup(
+      <ScamShieldPage
+        initialSettings={sampleSettings}
+        initialScreenshotName="bank-alert.png"
+        initialScreenshotOcrText="URGENT: Send gift cards right now and keep this secret!"
+      />
+    );
+    expect(shotPageHtml).toContain('Likely Scam — Do Not Click or Pay');
+
+    // 2. Calendar snap decision preserves state when vault.putEvent fails
+    const existing: CalendarEvent[] = [...sampleEvents];
+    const failedSnap = await applyCandidateDecisionWithPersistence({
+      candidate: {
+        id: 'cand-save-fail',
+        title: 'Eye Clinic',
+        date: '2026-07-20',
+        time: '11:00',
+        category: 'Medical',
+        confidence: 0.9,
+      },
+      decision: 'keep',
+      existingEvents: existing,
+      vault: {
+        putEvent: async () => ({
+          ok: false,
+          error: {
+            code: 'tx-failed',
+            message: 'We could not save that event on your device.',
+          },
+        }),
+      },
+    });
+    expect(failedSnap.ok).toBe(false);
+    if (!failedSnap.ok) {
+      expect(failedSnap.errorMessage).toContain('could not save');
+    }
+    expect(existing).toHaveLength(1);
+
+    const okSnap = await applyCandidateDecisionWithPersistence({
+      candidate: {
+        id: 'cand-save-ok',
+        title: 'Eye Clinic',
+        date: '2026-07-20',
+        time: '11:00',
+        category: 'Medical',
+        confidence: 0.9,
+      },
+      decision: 'keep',
+      existingEvents: existing,
+      vault: {
+        putEvent: async () => ({ ok: true, value: undefined }),
+      },
+    });
+    expect(okSnap.ok).toBe(true);
+    if (okSnap.ok) {
+      expect(okSnap.nextEvents).toHaveLength(2);
+    }
+
+    // 3. UnifiedInbox ingestDraft returns false on OFF channel or storage failure (preserving input)
+    const offChannelDraft = await ingestInboxDraftWithConsent({
+      draft: {
+        source: 'messengerPaste',
+        text: 'Hello from friend',
+        attachments: [],
+        receivedAt: '2026-07-10T09:00:00.000Z',
+      },
+      settings: sampleSettings, // messengerPaste is false
+    });
+    expect(offChannelDraft.ok).toBe(false);
+
+    const storageFailDraft = await ingestInboxDraftWithConsent({
+      draft: {
+        source: 'smsPaste',
+        text: 'Appointment on 2026-07-22 at 10:00',
+        attachments: [],
+        receivedAt: '2026-07-10T09:00:00.000Z',
+      },
+      settings: sampleSettings,
+      vault: {
+        putItem: async () => ({
+          ok: false,
+          error: {
+            code: 'tx-failed',
+            message: 'Could not save message right now.',
+          },
+        }),
+        appendAudit: async () => ({ ok: true, value: undefined }),
+      },
+    });
+    expect(storageFailDraft.ok).toBe(false);
+
+    const okDraft = await ingestInboxDraftWithConsent({
+      draft: {
+        source: 'smsPaste',
+        text: 'Appointment on 2026-07-22 at 10:00',
+        attachments: [],
+        receivedAt: '2026-07-10T09:00:00.000Z',
+      },
+      settings: sampleSettings,
+      vault: {
+        putItem: async () => ({ ok: true, value: undefined }),
+        appendAudit: async () => ({ ok: true, value: undefined }),
+      },
+    });
+    expect(okDraft.ok).toBe(true);
+
+    // 4. UnifiedInbox query re-evaluation handles valid, invalid, and cleared queries
+    const validQuery = evaluateInitialQuery(
+      '?source=whatsapp&text=Clinic+visit+tomorrow'
+    );
+    expect(validQuery.draft?.source).toBe('whatsappForward');
+    expect(validQuery.draft?.text).toBe('Clinic visit tomorrow');
+    expect(validQuery.error).toBeUndefined();
+
+    const invalidQuery = evaluateInitialQuery('?source=unknown&text=Hi');
+    expect(invalidQuery.draft).toBeUndefined();
+    expect(invalidQuery.error).toBeDefined();
+
+    const clearedQuery = evaluateInitialQuery('');
+    expect(clearedQuery.draft).toBeUndefined();
+    expect(clearedQuery.error).toBeUndefined();
   });
 });

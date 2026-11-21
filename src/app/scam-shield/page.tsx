@@ -34,11 +34,76 @@ const MAX_SCAM_TEXT_LENGTH = 5_000;
 const MAX_SCREENSHOT_BYTES = 10 * 1024 * 1024;
 const ALLOWED_SCREENSHOT_TYPES = new Set(['image/jpeg', 'image/png']);
 
+export const UNREADABLE_SCREENSHOT_MESSAGE =
+  'We could not read the words in that screenshot. Please retake or crop the screenshot more clearly, or paste the message text above.';
+
+export type ScamInputEvaluation =
+  | { ok: true; verdict: ScamCheckOutput }
+  | {
+      ok: false;
+      kind: 'empty' | 'too-long' | 'unreadable-screenshot';
+      message: string;
+    };
+
+export function evaluateScamCheckInput(params: {
+  messageText: string;
+  screenshotName?: string;
+  screenshotOcrText?: string;
+}): ScamInputEvaluation {
+  const { messageText, screenshotName, screenshotOcrText } = params;
+  const trimmedMessage = messageText.trim();
+  const trimmedOcr = (screenshotOcrText ?? '').trim();
+
+  if (messageText.length > MAX_SCAM_TEXT_LENGTH) {
+    return {
+      ok: false,
+      kind: 'too-long',
+      message:
+        'This message is longer than 5,000 characters. Please shorten it and check again.',
+    };
+  }
+
+  if (trimmedMessage.length === 0) {
+    if (screenshotName) {
+      if (trimmedOcr.length === 0) {
+        return {
+          ok: false,
+          kind: 'unreadable-screenshot',
+          message: UNREADABLE_SCREENSHOT_MESSAGE,
+        };
+      }
+      if (trimmedOcr.length > MAX_SCAM_TEXT_LENGTH) {
+        return {
+          ok: false,
+          kind: 'too-long',
+          message:
+            'The words in this screenshot are longer than 5,000 characters. Please crop the screenshot or paste the key part above.',
+        };
+      }
+      return { ok: true, verdict: checkText(trimmedOcr) };
+    }
+
+    return {
+      ok: false,
+      kind: 'empty',
+      message:
+        'Please paste a message or pick a screenshot first so we can check it.',
+    };
+  }
+
+  const combinedText =
+    trimmedOcr.length > 0 ? `${messageText}\n${trimmedOcr}` : messageText;
+  return { ok: true, verdict: checkText(combinedText) };
+}
+
 export type ScamShieldPageProps = {
   initialSettings?: Settings;
   initialText?: string;
+  initialScreenshotName?: string;
+  initialScreenshotOcrText?: string;
   initialVerdict?: ScamCheckOutput;
   initialError?: string;
+  extractScreenshotText?: (file: File) => Promise<string>;
   vault?: Vault;
   onNavigate?: (href: string) => void;
 };
@@ -46,8 +111,11 @@ export type ScamShieldPageProps = {
 export function ScamShieldPage({
   initialSettings,
   initialText = '',
+  initialScreenshotName,
+  initialScreenshotOcrText = '',
   initialVerdict,
   initialError,
+  extractScreenshotText,
   vault,
   onNavigate,
 }: ScamShieldPageProps) {
@@ -56,11 +124,21 @@ export function ScamShieldPage({
   );
   const [messageText, setMessageText] = useState<string>(initialText);
   const [screenshotName, setScreenshotName] = useState<string | undefined>(
-    undefined
+    initialScreenshotName
+  );
+  const [screenshotOcrText, setScreenshotOcrText] = useState<string>(
+    initialScreenshotOcrText
   );
   const [verdict, setVerdict] = useState<ScamCheckOutput | undefined>(() => {
     if (initialVerdict) return initialVerdict;
-    if (initialText.trim().length > 0) return checkText(initialText);
+    if (initialText.trim().length > 0 || initialScreenshotOcrText.trim().length > 0) {
+      const evaluated = evaluateScamCheckInput({
+        messageText: initialText,
+        screenshotName: initialScreenshotName,
+        screenshotOcrText: initialScreenshotOcrText,
+      });
+      return evaluated.ok ? evaluated.verdict : undefined;
+    }
     return undefined;
   });
   const [checkError, setCheckError] = useState<string | undefined>(
@@ -108,22 +186,18 @@ export function ScamShieldPage({
 
   const handleRunCheck = () => {
     setCheckError(undefined);
-    const trimmed = messageText.trim();
-    if (trimmed.length === 0) {
-      setCheckError(
-        'Please paste a message or pick a screenshot first so we can check it.'
-      );
-      setStatusMessage('Please enter a message before checking.');
+    const evaluated = evaluateScamCheckInput({
+      messageText,
+      screenshotName,
+      screenshotOcrText,
+    });
+    if (!evaluated.ok) {
+      setVerdict(undefined);
+      setCheckError(evaluated.message);
+      setStatusMessage(evaluated.message);
       return;
     }
-    if (messageText.length > MAX_SCAM_TEXT_LENGTH) {
-      setCheckError(
-        'This message is longer than 5,000 characters. Please shorten it and check again.'
-      );
-      setStatusMessage('Message is too long to check.');
-      return;
-    }
-    const result = checkText(messageText);
+    const result = evaluated.verdict;
     setVerdict(result);
     setAskFamilyConfirmOpen(false);
     setStatusMessage(
@@ -135,7 +209,7 @@ export function ScamShieldPage({
     );
   };
 
-  const handleScreenshotChange = (
+  const handleScreenshotChange = async (
     event: React.ChangeEvent<HTMLInputElement>
   ) => {
     const file = event.target.files?.[0];
@@ -167,6 +241,16 @@ export function ScamShieldPage({
     }
 
     setScreenshotName(file.name);
+    if (extractScreenshotText) {
+      try {
+        const extracted = await extractScreenshotText(file);
+        setScreenshotOcrText(extracted);
+      } catch {
+        setScreenshotOcrText('');
+      }
+    } else {
+      setScreenshotOcrText('');
+    }
     setStatusMessage(
       `Screenshot "${file.name}" is ready. Tap "Is This Safe?" to check.`
     );
@@ -240,18 +324,15 @@ export function ScamShieldPage({
     const actionId = 'scam-shield-ask-family';
     const confirmation = confirmFromTap(actionId);
     const recipient = settings.familyMembers[0]?.name ?? 'Trusted Family';
-
-    if (!resolvedVault) {
-      setAskFamilyConfirmOpen(false);
-      setStatusMessage(`Shared this safety check summary with ${recipient}.`);
-      return;
-    }
+    const auditVault = resolvedVault ?? {
+      appendAudit: async () => ({ ok: true as const, value: undefined }),
+    };
 
     const shareRes = await shareItemWithFamily({
       item: {
         id: 'scam-check-current',
-        source: 'smsPaste',
-        text: messageText,
+        source: screenshotName && messageText.trim().length === 0 ? 'photos' : 'smsPaste',
+        text: messageText.trim().length > 0 ? messageText : screenshotOcrText,
         attachments: [],
         receivedAt: new Date().toISOString(),
         group: 'Others',
@@ -264,7 +345,7 @@ export function ScamShieldPage({
       settings,
       confirmation,
       actionId,
-      vault: resolvedVault,
+      vault: auditVault,
       sendTransport: async () => ({ ok: true, value: undefined }),
     });
 
@@ -341,7 +422,7 @@ export function ScamShieldPage({
             id="scam-screenshot-input"
             type="file"
             accept="image/jpeg,image/png"
-            onChange={handleScreenshotChange}
+            onChange={(e) => void handleScreenshotChange(e)}
             className="sr-only"
           />
           {screenshotName ? (
