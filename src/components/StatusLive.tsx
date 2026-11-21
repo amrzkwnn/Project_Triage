@@ -16,7 +16,7 @@ export function StatusLive({
   const baseClass = visuallyHidden
     ? 'sr-only'
     : message
-      ? 'rounded-xl border-2 border-[#0F766E] bg-[#F0FDFA] px-4 py-3 text-[18px] font-medium text-[#111827]'
+      ? 'anim-fade-in rounded-card shadow-card border-2 border-brand-soft bg-brand-wash px-4 py-3 text-[18px] font-medium text-ink'
       : '';
 
   return (

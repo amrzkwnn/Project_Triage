@@ -71,73 +71,82 @@ export function DecisionConfirmCard({
     <article
       data-card="true"
       data-tier={tier}
-      className={`rounded-2xl border-2 p-5 space-y-4 ${
+      className={`anim-fade-up relative overflow-hidden rounded-card border-2 p-5 shadow-card backdrop-blur-md ${
         isTier3
-          ? 'border-[#BE123C] bg-[#FFF1F2]'
-          : 'border-[#D97706] bg-white'
+          ? 'border-red-200/90 bg-gradient-to-br from-red-50/90 via-white/85 to-red-50/40'
+          : 'border-brand-soft bg-gradient-to-br from-brand-soft/75 via-brand-wash to-white'
       } ${className}`.trim()}
     >
-      <div className="flex flex-wrap items-center gap-3">
-        <span
-          data-badge="true"
-          className={`inline-flex items-center gap-2 rounded-lg border-2 px-3 py-1.5 text-[18px] font-bold ${
-            isTier3
-              ? 'border-[#BE123C] bg-white text-[#881337]'
-              : 'border-[#D97706] bg-[#FFFBEB] text-[#92400E]'
-          }`}
-        >
-          <span aria-hidden="true" className="inline-flex shrink-0 items-center">
-            {isTier3 ? <ShieldAlert size={20} /> : <AlertTriangle size={20} />}
-          </span>
-          <span>{isTier3 ? 'Needs Careful Check' : 'Needs Your Decision'}</span>
-        </span>
+      <div
+        aria-hidden="true"
+        className={`pointer-events-none absolute -right-10 -top-12 h-32 w-32 rounded-full blur-2xl ${
+          isTier3 ? 'bg-red-100/70' : 'bg-brand-soft/60'
+        }`}
+      />
 
-        {source ? <SourceBadge source={source} /> : null}
-        {priority ? <PriorityPill priority={priority} /> : null}
-      </div>
-
-      {title ? (
-        <h3 className="text-[20px] font-bold text-[#111827]">{title}</h3>
-      ) : null}
-
-      <p className="text-[20px] leading-relaxed text-[#111827]">{summary}</p>
-
-      <div className="flex flex-wrap items-center gap-4 pt-1">
-        <SeniorButton
-          variant={isTier3 ? 'warn' : 'primary'}
-          icon={<Check size={20} />}
-          onClick={handleConfirmTap}
-        >
-          {confirmLabel}
-        </SeniorButton>
-
-        <SeniorButton
-          variant="secondary"
-          icon={<X size={20} />}
-          onClick={handleDismissTap}
-        >
-          {dismissLabel}
-        </SeniorButton>
-
-        {showAskFamily && onAskFamily ? (
-          <SeniorButton
-            variant="danger"
-            icon={<Users size={20} />}
-            onClick={onAskFamily}
+      <div className="relative space-y-4">
+        <div className="flex flex-wrap items-center gap-3">
+          <span
+            data-badge="true"
+            className={`inline-flex items-center gap-2 rounded-full border-2 px-3 py-1 text-[14px] font-bold tracking-[0.04em] shadow-pill ${
+              isTier3
+                ? 'border-red-200 bg-white/90 text-red-700'
+                : 'border-brand-soft bg-white/90 text-brand-deep'
+            }`}
           >
-            {askFamilyLabel}
-          </SeniorButton>
+            <span aria-hidden="true" className="inline-flex shrink-0 items-center">
+              {isTier3 ? <ShieldAlert size={18} /> : <AlertTriangle size={18} />}
+            </span>
+            <span>{isTier3 ? 'Needs Careful Check' : 'Needs Your Decision'}</span>
+          </span>
+
+          {source ? <SourceBadge source={source} /> : null}
+          {priority ? <PriorityPill priority={priority} /> : null}
+        </div>
+
+        {title ? (
+          <h3 className="text-[20px] font-bold text-ink">{title}</h3>
         ) : null}
 
-        {showEnableSharingOffer && onEnableSharing ? (
+        <p className="text-[20px] leading-relaxed text-ink">{summary}</p>
+
+        <div className="flex flex-wrap items-center gap-4 pt-1">
+          <SeniorButton
+            variant={isTier3 ? 'warn' : 'primary'}
+            icon={<Check size={20} />}
+            onClick={handleConfirmTap}
+          >
+            {confirmLabel}
+          </SeniorButton>
+
           <SeniorButton
             variant="secondary"
-            icon={<Users size={20} />}
-            onClick={onEnableSharing}
+            icon={<X size={20} />}
+            onClick={handleDismissTap}
           >
-            Turn On Family Sharing
+            {dismissLabel}
           </SeniorButton>
-        ) : null}
+
+          {showAskFamily && onAskFamily ? (
+            <SeniorButton
+              variant="danger"
+              icon={<Users size={20} />}
+              onClick={onAskFamily}
+            >
+              {askFamilyLabel}
+            </SeniorButton>
+          ) : null}
+
+          {showEnableSharingOffer && onEnableSharing ? (
+            <SeniorButton
+              variant="secondary"
+              icon={<Users size={20} />}
+              onClick={onEnableSharing}
+            >
+              Turn On Family Sharing
+            </SeniorButton>
+          ) : null}
+        </div>
       </div>
     </article>
   );

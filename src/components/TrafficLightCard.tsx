@@ -30,23 +30,26 @@ type VerdictStyle = {
 const VERDICT_STYLES: Record<VerdictValue, VerdictStyle> = {
   safe: {
     label: 'Looks Safe',
-    containerClass: 'border-[#15803D] bg-[#F0FDF4]',
+    containerClass:
+      'border-[#15803D] bg-gradient-to-br from-green-50/90 via-white to-green-50/40',
     headingClass: 'text-[#14532D]',
-    badgeClass: 'border-[#15803D] bg-white text-[#14532D]',
+    badgeClass: 'border-[#15803D] bg-white/95 text-[#14532D]',
     icon: <ShieldCheck size={28} />,
   },
   caution: {
     label: 'Be Careful — Verify First',
-    containerClass: 'border-[#D97706] bg-[#FFFBEB]',
+    containerClass:
+      'border-[#D97706] bg-gradient-to-br from-amber-50/90 via-white to-amber-50/40',
     headingClass: 'text-[#92400E]',
-    badgeClass: 'border-[#D97706] bg-white text-[#92400E]',
+    badgeClass: 'border-[#D97706] bg-white/95 text-[#92400E]',
     icon: <AlertTriangle size={28} />,
   },
   danger: {
     label: 'Likely Scam — Do Not Click or Pay',
-    containerClass: 'border-[#BE123C] bg-[#FFF1F2]',
+    containerClass:
+      'border-[#BE123C] bg-gradient-to-br from-red-50/90 via-white to-red-50/40',
     headingClass: 'text-[#881337]',
-    badgeClass: 'border-[#BE123C] bg-white text-[#881337]',
+    badgeClass: 'border-[#BE123C] bg-white/95 text-[#881337]',
     icon: <ShieldAlert size={28} />,
   },
 };
@@ -71,13 +74,13 @@ export function TrafficLightCard({
     <section
       data-card="true"
       data-verdict={verdict.value}
-      className={`rounded-2xl border-2 p-5 space-y-4 ${style.containerClass} ${className}`.trim()}
+      className={`anim-fade-up relative overflow-hidden rounded-card border-2 p-5 shadow-card backdrop-blur-md space-y-4 ${style.containerClass} ${className}`.trim()}
       aria-label={style.label}
     >
       <div className="flex flex-wrap items-center gap-3">
         <span
           data-badge="true"
-          className={`inline-flex items-center gap-3 rounded-xl border-2 px-4 py-2 text-[20px] font-bold ${style.badgeClass}`}
+          className={`inline-flex items-center gap-3 rounded-full border-2 px-4 py-2 text-[20px] font-bold shadow-pill ${style.badgeClass}`}
         >
           <span aria-hidden="true" className="inline-flex shrink-0 items-center">
             {style.icon}
@@ -87,7 +90,7 @@ export function TrafficLightCard({
       </div>
 
       {reasons.length > 0 ? (
-        <ul className="list-disc pl-6 space-y-2 text-[18px] leading-relaxed text-[#111827]">
+        <ul className="list-disc pl-6 space-y-2 text-[18px] leading-relaxed text-ink">
           {reasons.map((reason, idx) => (
             <li key={`${idx}-${reason}`}>{reason}</li>
           ))}

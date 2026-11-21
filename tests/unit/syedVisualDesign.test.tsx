@@ -1,0 +1,242 @@
+import React from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
+import { describe, expect, it, vi } from 'vitest';
+import tailwindConfig from '../../tailwind.config.js';
+import { SeniorButton } from '@/components/SeniorButton';
+import { SourceBadge } from '@/components/SourceBadge';
+import { PriorityPill } from '@/components/PriorityPill';
+import { DecisionConfirmCard } from '@/components/DecisionConfirmCard';
+import { TrafficLightCard } from '@/components/TrafficLightCard';
+import { StepWizard } from '@/components/StepWizard';
+import { PrivacyPill } from '@/components/PrivacyPill';
+import { StatusLive } from '@/components/StatusLive';
+import { BackToHome } from '@/components/BackToHome';
+import { isValidConfirmation, type Confirmation } from '@/lib/actions/confirmation';
+import { createDefaultSettings } from '@/lib/types';
+
+function findElements(
+  node: React.ReactNode,
+  predicate: (el: React.ReactElement<Record<string, unknown>>) => boolean,
+  acc: React.ReactElement<Record<string, unknown>>[] = []
+): React.ReactElement<Record<string, unknown>>[] {
+  if (!node) return acc;
+  if (Array.isArray(node)) {
+    for (const child of node) {
+      findElements(child, predicate, acc);
+    }
+    return acc;
+  }
+  if (React.isValidElement(node)) {
+    const el = node as React.ReactElement<Record<string, unknown>>;
+    if (predicate(el)) {
+      acc.push(el);
+    }
+    if (el.props && 'children' in el.props) {
+      findElements(el.props.children as React.ReactNode, predicate, acc);
+    }
+  }
+  return acc;
+}
+
+describe('Task 1: Syed Design Tokens and Core Components', () => {
+  it('configures exact Syed color, radius, and shadow tokens in tailwind.config.js', () => {
+    const extend = tailwindConfig.theme?.extend as Record<string, any>;
+    expect(extend.fontFamily.sans).toEqual([
+      '"Inter Variable"',
+      'Inter',
+      'system-ui',
+      '-apple-system',
+      'sans-serif',
+    ]);
+    expect(extend.colors.canvas).toBe('#F7F8FA');
+    expect(extend.colors.surface).toBe('#FFFFFF');
+    expect(extend.colors.ink).toBe('#0F172A');
+    expect(extend.colors.muted).toBe('#64748B');
+    expect(extend.colors.faint).toBe('#94A3B8');
+    expect(extend.colors.line).toBe('#E7EAF0');
+    expect(extend.colors.brand).toEqual({
+      DEFAULT: '#0F766E',
+      deep: '#115E59',
+      bright: '#0D9488',
+      soft: '#CCFBF1',
+      wash: '#F0FDFA',
+    });
+    expect(extend.borderRadius.card).toBe('16px');
+    expect(extend.borderRadius.chip).toBe('12px');
+    expect(extend.boxShadow.card).toContain('rgba(15,23,42,0.06)');
+    expect(extend.boxShadow.lift).toContain('rgba(15,23,42,0.10)');
+    expect(extend.boxShadow.pill).toContain('rgba(15,23,42,0.10)');
+    expect(extend.boxShadow.phone).toContain('rgba(15,23,42,0.14)');
+  });
+
+  it('merges Syed CSS utilities and motion keyframes with accessibility rules in src/app/globals.css', async () => {
+    const fsPromises = (await import(/* @vite-ignore */ 'node:' + 'fs/promises')) as {
+      readFile(url: URL, encoding: 'utf8'): Promise<string>;
+    };
+    const css = await fsPromises.readFile(
+      new URL('../../src/app/globals.css', import.meta.url),
+      'utf8'
+    );
+
+    for (const token of [
+      '.tnum',
+      '.app-scroll',
+      '.no-scrollbar',
+      '.chrome',
+      '.pressable',
+      '.phone-body',
+      '.anim-fade-up',
+      '.anim-fade-in',
+      '.anim-pop',
+      '.anim-toast',
+      '.anim-collapse',
+      '.anim-check',
+      '.skeleton',
+      '.pulse-ring',
+      '.anim-col',
+      '.doc-svg svg',
+      '.print-doc',
+      '@media print',
+      '@media (prefers-reduced-motion: reduce)',
+      'text-wrap: balance',
+      '.skip-link',
+      ':focus-visible',
+      ':user-invalid',
+      '@media (forced-colors: active)',
+    ]) {
+      expect(css, `globals.css missing ${token}`).toContain(token);
+    }
+  });
+
+  it('restyled DecisionConfirmCard preserves Syed glass classes, text-[20px], and click-only confirmation minting', () => {
+    const confirmed: Confirmation[] = [];
+    const onConfirm = vi.fn((c: Confirmation) => confirmed.push(c));
+    const onDismiss = vi.fn();
+
+    const tier3Html = renderToStaticMarkup(
+      <DecisionConfirmCard
+        actionId="act-99"
+        tier={3}
+        title="Critical alert"
+        summary="Suspicious bank transfer message requires check."
+        source="whatsappForward"
+        priority="Important"
+        onConfirm={onConfirm}
+        onDismiss={onDismiss}
+      />
+    );
+    expect(tier3Html).toContain('rounded-card');
+    expect(tier3Html).toContain('bg-gradient-to-br');
+    expect(tier3Html).toContain('shadow-card');
+    expect(tier3Html).toContain('backdrop-blur-md');
+    expect(tier3Html).toContain('text-[20px]');
+    expect(onConfirm).not.toHaveBeenCalled();
+
+    const tier2Html = renderToStaticMarkup(
+      <DecisionConfirmCard
+        actionId="act-100"
+        tier={2}
+        summary="Confirm appointment date."
+        onConfirm={onConfirm}
+        onDismiss={onDismiss}
+      />
+    );
+    expect(tier2Html).toContain('border-brand-soft');
+    expect(tier2Html).toContain('bg-gradient-to-br');
+
+    // Click-only confirmation minting
+    const tree = DecisionConfirmCard({
+      actionId: 'act-99',
+      tier: 3,
+      summary: 'Suspicious bank transfer message requires check.',
+      onConfirm,
+      onDismiss,
+    });
+    const buttons = findElements(tree, (el) => el.type === SeniorButton);
+    const confirmBtn = buttons.find((el) =>
+      String(el.props.children).includes('Confirm')
+    );
+    const dismissBtn = buttons.find((el) =>
+      String(el.props.children).includes('Dismiss')
+    );
+    expect(confirmBtn).toBeDefined();
+    expect(dismissBtn).toBeDefined();
+
+    (dismissBtn!.props.onClick as () => void)();
+    expect(onDismiss).toHaveBeenCalledTimes(1);
+    expect(onConfirm).not.toHaveBeenCalled();
+
+    (confirmBtn!.props.onClick as () => void)();
+    expect(onConfirm).toHaveBeenCalledTimes(1);
+    expect(confirmed).toHaveLength(1);
+    expect(isValidConfirmation(confirmed[0], 'act-99')).toBe(true);
+
+    const buttonHtml = renderToStaticMarkup(
+      <SeniorButton variant="primary">Confirm Action</SeniorButton>
+    );
+    expect(buttonHtml).toContain('pressable');
+    expect(buttonHtml).toContain('rounded-full');
+    expect(buttonHtml).toContain('shadow-pill');
+    expect(buttonHtml).toContain('min-h-[56px]');
+    expect(buttonHtml).toContain('border-2');
+
+    const waBadge = renderToStaticMarkup(<SourceBadge source="whatsappForward" />);
+    expect(waBadge).toContain('bg-green-50');
+    expect(waBadge).toContain('text-green-700');
+    expect(waBadge).toContain('border-2');
+    expect(waBadge).toContain('From WhatsApp');
+
+    const emailBadge = renderToStaticMarkup(<SourceBadge source="email" />);
+    expect(emailBadge).toContain('bg-blue-50');
+    expect(emailBadge).toContain('text-blue-700');
+    expect(emailBadge).toContain('From Email');
+
+    const importantPill = renderToStaticMarkup(<PriorityPill priority="Important" />);
+    expect(importantPill).toContain('border-red-200');
+    expect(importantPill).toContain('bg-red-50');
+    expect(importantPill).toContain('text-red-600');
+    expect(importantPill).toContain('shadow-pill');
+    expect(importantPill).toContain('border-2');
+
+    const pillHtml = renderToStaticMarkup(
+      <PrivacyPill settings={createDefaultSettings()} />
+    );
+    expect(pillHtml).toContain('shadow-pill');
+    expect(pillHtml).toContain('pressable');
+    expect(pillHtml).toContain('My Data: 0 Sources On • AI Off');
+
+    const wizardHtml = renderToStaticMarkup(
+      <StepWizard
+        steps={[
+          { title: 'Step A', content: <p>First</p> },
+          { title: 'Step B', content: <p>Second</p> },
+        ]}
+      />
+    );
+    expect(wizardHtml).toContain('rounded-card');
+    expect(wizardHtml).toContain('shadow-card');
+    expect(wizardHtml).toContain('Step 1 of 2');
+    expect(wizardHtml).toContain('h-[6px]');
+
+    const trafficHtml = renderToStaticMarkup(
+      <TrafficLightCard
+        verdict={{ value: 'danger', reasons: ['Urgent payment demand'], flags: ['urgency'] }}
+      />
+    );
+    expect(trafficHtml).toContain('rounded-card');
+    expect(trafficHtml).toContain('shadow-card');
+    expect(trafficHtml).toContain('bg-gradient-to-br');
+    expect(trafficHtml).toContain('Likely Scam — Do Not Click or Pay');
+
+    const statusHtml = renderToStaticMarkup(<StatusLive message="Saved." />);
+    expect(statusHtml).toContain('rounded-card');
+    expect(statusHtml).toContain('shadow-card');
+    expect(statusHtml).toContain('border-brand-soft');
+    expect(statusHtml).toContain('bg-brand-wash');
+
+    const backHtml = renderToStaticMarkup(<BackToHome />);
+    expect(backHtml).toContain('pressable');
+    expect(backHtml).toContain('rounded-full');
+    expect(backHtml).toContain('min-h-[56px]');
+  });
+});

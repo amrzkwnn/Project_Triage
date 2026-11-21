@@ -16,7 +16,7 @@ export function BackToHome({
   className = '',
 }: BackToHomeProps) {
   return (
-    <div className={`mb-4 ${className}`.trim()}>
+    <div className={`anim-fade-in mb-4 ${className}`.trim()}>
       <SeniorButton
         href={href}
         variant="secondary"
