@@ -2,24 +2,59 @@
 
 import React, { useEffect, useState } from 'react';
 import { AlertTriangle, WifiOff } from 'lucide-react';
+import type { Vault } from '@/lib/vault/schema';
+import { createVault } from '@/lib/vault/store';
 import './globals.css';
+
+export type StoreProbe =
+  | Pick<Vault, 'getSettings'>
+  | (() => Promise<boolean> | boolean);
+
+export async function probeStoreUnavailable(
+  vaultOrProbe?: StoreProbe
+): Promise<boolean> {
+  try {
+    if (typeof vaultOrProbe === 'function') {
+      return Boolean(await vaultOrProbe());
+    }
+    if (vaultOrProbe) {
+      const res = await vaultOrProbe.getSettings();
+      return !res.ok;
+    }
+    if (
+      typeof window !== 'undefined' &&
+      typeof globalThis.indexedDB === 'undefined'
+    ) {
+      return true;
+    }
+    const vault = createVault();
+    const res = await vault.getSettings();
+    return !res.ok;
+  } catch {
+    return true;
+  }
+}
 
 export type AppShellProps = {
   children: React.ReactNode;
   isOffline?: boolean;
   storeUnavailable?: boolean;
   storeErrorMessage?: string;
+  storeProbe?: StoreProbe;
   onNavigate?: (href: string) => void;
 };
 
 export function AppShell({
   children,
   isOffline,
-  storeUnavailable = false,
+  storeUnavailable,
   storeErrorMessage,
+  storeProbe,
   onNavigate,
 }: AppShellProps) {
   const [browserOffline, setBrowserOffline] = useState(false);
+  const [detectedStoreUnavailable, setDetectedStoreUnavailable] =
+    useState(false);
 
   useEffect(() => {
     if (typeof window === 'undefined' || typeof navigator === 'undefined') {
@@ -45,7 +80,26 @@ export function AppShell({
     };
   }, []);
 
+  useEffect(() => {
+    if (storeUnavailable !== undefined) {
+      return;
+    }
+    let cancelled = false;
+    void probeStoreUnavailable(storeProbe).then((unavailable) => {
+      if (!cancelled) {
+        setDetectedStoreUnavailable(unavailable);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [storeUnavailable, storeProbe]);
+
   const offline = isOffline !== undefined ? isOffline : browserOffline;
+  const isStoreUnavailable =
+    storeUnavailable !== undefined
+      ? storeUnavailable
+      : detectedStoreUnavailable;
   const fallbackMessage =
     storeErrorMessage ??
     'We could not load your saved data on this device right now. Your saved items stay safe, and you can still use the helper tools below.';
@@ -112,7 +166,7 @@ export function AppShell({
           </div>
         ) : null}
 
-        {storeUnavailable ? (
+        {isStoreUnavailable ? (
           <div
             role="alert"
             data-badge="true"

@@ -24,7 +24,7 @@ import { StatusLive } from '@/components/StatusLive';
 import { BackToHome } from '@/components/BackToHome';
 import { PrivacyPill } from '@/components/PrivacyPill';
 import manifest from '@/app/manifest';
-import { AppShell } from '@/app/layout';
+import { AppShell, probeStoreUnavailable } from '@/app/layout';
 import { HomeHub } from '@/app/page';
 import { MyDataPage } from '@/app/my-data/page';
 
@@ -450,5 +450,139 @@ describe('PWA Manifest, App Shell, Home Hub, and My Data Screen', () => {
     expect(step2Html).toContain('Erase Everything');
     expect(step2Html).toContain('cannot be undone');
     expect(stripHtml(step2Html)).not.toMatch(BANNED_JARGON);
+  });
+
+  it('probeStoreUnavailable detects healthy, error-returning, and throwing Local_Store states', async () => {
+    const healthy = await probeStoreUnavailable({
+      getSettings: async () => ({ ok: true, value: createDefaultSettings() }),
+    });
+    expect(healthy).toBe(false);
+
+    const unavailable = await probeStoreUnavailable({
+      getSettings: async () => ({
+        ok: false,
+        error: { code: 'unavailable', message: 'Storage is unavailable.' },
+      }),
+    });
+    expect(unavailable).toBe(true);
+
+    const throwing = await probeStoreUnavailable({
+      getSettings: async () => {
+        throw new Error('IndexedDB blocked');
+      },
+    });
+    expect(throwing).toBe(true);
+  });
+
+  it('public/sw.js caches shell routes per-URL resiliently and always resolves offline fetch to a valid Response', async () => {
+    const fsPromises = (await import(/* @vite-ignore */ 'node:' + 'fs/promises')) as {
+      readFile(url: URL, encoding: 'utf8'): Promise<string>;
+    };
+    const swUrl = new URL('../../public/sw.js', import.meta.url);
+    const swSource = await fsPromises.readFile(swUrl, 'utf8');
+
+    const listeners = new Map<string, (event: unknown) => void>();
+    const cachedMap = new Map<string, Response>();
+
+    const mockCache = {
+      add: vi.fn(async (url: string) => {
+        if (url === '/scam-shield') {
+          throw new Error('404 Not Found');
+        }
+        cachedMap.set(url, new Response(`cached:${url}`, { status: 200 }));
+      }),
+      addAll: vi.fn(async () => {
+        throw new Error('addAll should not be called because atomic caching fails all URLs');
+      }),
+      put: vi.fn(async (req: { url?: string } | string, res: Response) => {
+        const key = typeof req === 'string' ? req : req.url ?? '';
+        cachedMap.set(key, res);
+      }),
+    };
+
+    const mockCaches = {
+      open: vi.fn(async () => mockCache),
+      keys: vi.fn(async () => []),
+      delete: vi.fn(async () => true),
+      match: vi.fn(async (req: { url?: string } | string) => {
+        const key = typeof req === 'string' ? req : req.url ?? '';
+        return cachedMap.get(key);
+      }),
+    };
+
+    const selfObj = {
+      location: { origin: 'https://helper.example' },
+      addEventListener: (type: string, cb: (event: unknown) => void) => {
+        listeners.set(type, cb);
+      },
+      skipWaiting: vi.fn(async () => undefined),
+      clients: { claim: vi.fn(async () => undefined) },
+    };
+
+    const mockFetch = vi.fn(async () => {
+      throw new Error('Offline');
+    });
+
+    const executeSw = new Function(
+      'self',
+      'caches',
+      'fetch',
+      'URL',
+      'Response',
+      'Promise',
+      swSource
+    );
+    executeSw(selfObj, mockCaches, mockFetch, URL, Response, Promise);
+
+    // 1. Install caches surviving routes even when one route fails
+    const installHandler = listeners.get('install');
+    expect(installHandler).toBeDefined();
+    let installPromise: Promise<unknown> | undefined;
+    installHandler!({
+      waitUntil: (p: Promise<unknown>) => {
+        installPromise = p;
+      },
+    });
+    await installPromise;
+    expect(mockCache.addAll).not.toHaveBeenCalled();
+    expect(cachedMap.has('/')).toBe(true);
+    expect(cachedMap.has('/my-data')).toBe(true);
+    expect(cachedMap.has('/scam-shield')).toBe(false);
+
+    // 2. Offline navigation when '/' is NOT cached still resolves a valid Response (never undefined)
+    cachedMap.clear();
+    const fetchHandler = listeners.get('fetch');
+    expect(fetchHandler).toBeDefined();
+
+    let navResponsePromise: Promise<Response> | undefined;
+    fetchHandler!({
+      request: {
+        method: 'GET',
+        mode: 'navigate',
+        url: 'https://helper.example/inbox',
+      },
+      respondWith: (p: Promise<Response>) => {
+        navResponsePromise = p;
+      },
+    });
+    const navRes = await navResponsePromise;
+    expect(navRes).toBeInstanceOf(Response);
+    expect(navRes!.status).toBe(503);
+
+    // 3. Offline static asset miss resolves a valid Response (never undefined)
+    let assetResponsePromise: Promise<Response> | undefined;
+    fetchHandler!({
+      request: {
+        method: 'GET',
+        mode: 'no-cors',
+        url: 'https://helper.example/icons/icon-192.png',
+      },
+      respondWith: (p: Promise<Response>) => {
+        assetResponsePromise = p;
+      },
+    });
+    const assetRes = await assetResponsePromise;
+    expect(assetRes).toBeInstanceOf(Response);
+    expect(assetRes!.status).toBe(503);
   });
 });

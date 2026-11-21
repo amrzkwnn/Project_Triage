@@ -9,11 +9,20 @@ const SHELL_URLS = [
   '/calendar',
 ];
 
+function makeOfflineResponse(message) {
+  return new Response(message, {
+    status: 503,
+    headers: { 'Content-Type': 'text/plain; charset=utf-8' },
+  });
+}
+
 self.addEventListener('install', (event) => {
   event.waitUntil(
     caches
       .open(SHELL_VERSION)
-      .then((store) => store.addAll(SHELL_URLS).catch(() => undefined))
+      .then((store) =>
+        Promise.allSettled(SHELL_URLS.map((url) => store.add(url)))
+      )
       .then(() => self.skipWaiting())
   );
 });
@@ -66,6 +75,7 @@ self.addEventListener('fetch', (event) => {
           caches
             .match(request)
             .then((matched) => matched || caches.match('/'))
+            .then((fallback) => fallback || makeOfflineResponse('You are offline.'))
         )
     );
     return;
@@ -87,7 +97,7 @@ self.addEventListener('fetch', (event) => {
           }
           return response;
         })
-        .catch(() => matched);
+        .catch(() => makeOfflineResponse('Offline'));
     })
   );
 });

@@ -105,7 +105,7 @@ article {
   input,
   textarea,
   select,
-  [role="status"],
+  [role="status"]:not(:empty),
   [data-badge="true"],
   [data-card="true"] {
     border: 2px solid ButtonBorder !important;
