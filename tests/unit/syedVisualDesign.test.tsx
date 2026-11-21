@@ -267,21 +267,29 @@ describe('Task 2: Syed PhoneFrame, DemoShell, TabBar, and AppShell', () => {
   it('DemoShell presentation copy contains zero banned technical jargon', () => {
     const blob = JSON.stringify(presentationContent);
     expect(blob).not.toMatch(BANNED_JARGON);
-  });
-
-  it('renders DemoShell, PhoneFrame, and TabBar safely under SSR renderToStaticMarkup', () => {
-    const html = renderToStaticMarkup(
+    const demoHtml = renderToStaticMarkup(
       <DemoShell>
-        <PhoneFrame>
-          <ToastProvider>
-            <div>Inside Phone Screen</div>
-            <TabBar activePath="/calendar" />
-          </ToastProvider>
-        </PhoneFrame>
+        <div>Demo Slot</div>
       </DemoShell>
     );
-    expect(html).toContain('phone-body');
-    expect(html).toContain('width:414px;height:868px');
+    expect(demoHtml).toContain(presentationContent.brand.name);
+    expect(demoHtml).toContain(presentationContent.problem.heading);
+    expect(demoHtml).toContain(presentationContent.solution.heading);
+  });
+
+  it('renders PhoneFrame and TabBar safely under SSR renderToStaticMarkup without outer bezel', () => {
+    const html = renderToStaticMarkup(
+      <PhoneFrame>
+        <ToastProvider>
+          <div>Inside Phone Screen</div>
+          <TabBar activePath="/calendar" />
+        </ToastProvider>
+      </PhoneFrame>
+    );
+    expect(html).toContain('data-phone-screen="true"');
+    expect(html).toContain('max-w-[430px]');
+    expect(html).not.toContain('phone-body');
+    expect(html).not.toContain('Daily phone life can feel overwhelming.');
     expect(html).toContain('Inside Phone Screen');
     expect(html).toContain('href="/"');
     expect(html).toContain('href="/inbox"');
@@ -289,19 +297,19 @@ describe('Task 2: Syed PhoneFrame, DemoShell, TabBar, and AppShell', () => {
     expect(html).toContain('href="/scam-shield"');
     expect(html).toContain('href="/my-data"');
     expect(html).toContain('min-h-[56px]');
-    expect(html).toContain(presentationContent.brand.name);
-    expect(html).toContain(presentationContent.problem.heading);
-    expect(html).toContain(presentationContent.solution.heading);
   });
 
-  it('AppShell wraps children in Syed DemoShell + PhoneFrame + TabBar while preserving landmarks and zero banned jargon', () => {
+  it('PhoneFrame provides ScreenPortalContext and AppShell renders only inner phone screen without outer bezel or DemoShell columns', () => {
     const html = renderToStaticMarkup(
       <AppShell isOffline storeUnavailable activePath="/">
         <p>Senior companion content</p>
       </AppShell>
     );
     expect(html).toContain('Skip to main content');
-    expect(html).toContain('phone-body');
+    expect(html).toContain('data-phone-screen="true"');
+    expect(html).toContain('max-w-[430px]');
+    expect(html).not.toContain('phone-body');
+    expect(html).not.toContain('Daily phone life can feel overwhelming.');
     expect(html).toContain('<header');
     expect(html).toContain('aria-label="Primary"');
     expect(html).toContain('<main');

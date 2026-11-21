@@ -3,10 +3,6 @@
 import React, { useEffect, useState } from 'react';
 import { AlertTriangle, WifiOff } from 'lucide-react';
 import { PhoneFrame } from '@/components/PhoneFrame';
-import {
-  DemoShell,
-  SHELL_RESERVED,
-} from '@/components/presentation/DemoShell';
 import { TabBar } from '@/components/TabBar';
 import { ToastProvider } from '@/components/Toast';
 import type { Vault } from '@/lib/vault/schema';
@@ -124,94 +120,92 @@ export function AppShell({
   };
 
   return (
-    <DemoShell>
-      <PhoneFrame reserved={SHELL_RESERVED}>
-        <ToastProvider>
-          <div className="relative flex h-full min-h-0 flex-col bg-canvas text-ink">
-            <a href="#main-content" className="skip-link">
-              Skip to main content
-            </a>
+    <PhoneFrame>
+      <ToastProvider>
+        <div className="relative flex h-full min-h-0 flex-1 flex-col bg-canvas text-ink">
+          <a href="#main-content" className="skip-link">
+            Skip to main content
+          </a>
 
-            <header className="chrome shrink-0 border-b border-line bg-white/90 px-4 py-2.5 backdrop-blur-md">
-              <div className="flex items-center justify-between gap-2">
+          <header className="chrome shrink-0 border-b border-line bg-white/90 px-4 py-2.5 backdrop-blur-md">
+            <div className="flex items-center justify-between gap-2">
+              <a
+                href="/"
+                onClick={(e) => handleNavClick(e, '/')}
+                className="inline-flex min-h-[56px] items-center text-[18px] font-bold tracking-tight text-ink no-underline"
+              >
+                My Daily Helper
+              </a>
+
+              <nav aria-label="Primary" className="flex items-center gap-2">
                 <a
                   href="/"
                   onClick={(e) => handleNavClick(e, '/')}
-                  className="inline-flex min-h-[56px] items-center text-[18px] font-bold tracking-tight text-ink no-underline"
+                  className="pressable inline-flex min-h-[56px] min-w-[56px] items-center justify-center rounded-chip border border-line bg-white px-3 py-1.5 text-[14px] font-semibold text-ink no-underline shadow-card hover:bg-canvas"
                 >
-                  My Daily Helper
+                  Home
                 </a>
-
-                <nav aria-label="Primary" className="flex items-center gap-2">
-                  <a
-                    href="/"
-                    onClick={(e) => handleNavClick(e, '/')}
-                    className="pressable inline-flex min-h-[56px] min-w-[56px] items-center justify-center rounded-chip border border-line bg-white px-3 py-1.5 text-[14px] font-semibold text-ink no-underline shadow-card hover:bg-canvas"
-                  >
-                    Home
-                  </a>
-                  <a
-                    href="/my-data"
-                    onClick={(e) => handleNavClick(e, '/my-data')}
-                    className="pressable inline-flex min-h-[56px] min-w-[56px] items-center justify-center rounded-chip border border-brand-soft bg-brand-wash px-3 py-1.5 text-[14px] font-semibold text-brand-deep no-underline shadow-card hover:bg-brand-soft"
-                  >
-                    My Data
-                  </a>
-                </nav>
-              </div>
-            </header>
-
-            <div className="app-scroll min-h-0 flex-1 bg-canvas px-5 pb-6 pt-3">
-              {(offline || isStoreUnavailable) && (
-                <div className="mb-4 space-y-3">
-                  {offline ? (
-                    <div
-                      role="status"
-                      aria-live="polite"
-                      data-badge="true"
-                      className="flex items-start gap-3 rounded-card border-2 border-[#D97706] bg-[#FFFBEB] p-3.5 text-[15px] font-semibold text-[#92400E] shadow-card"
-                    >
-                      <span
-                        aria-hidden="true"
-                        className="mt-0.5 inline-flex shrink-0"
-                      >
-                        <WifiOff size={20} />
-                      </span>
-                      <span>
-                        You are offline. You can still view everything saved on
-                        this device.
-                      </span>
-                    </div>
-                  ) : null}
-
-                  {isStoreUnavailable ? (
-                    <div
-                      role="alert"
-                      data-badge="true"
-                      className="flex items-start gap-3 rounded-card border-2 border-[#BE123C] bg-[#FFF1F2] p-3.5 text-[15px] font-semibold text-[#881337] shadow-card"
-                    >
-                      <span
-                        aria-hidden="true"
-                        className="mt-0.5 inline-flex shrink-0"
-                      >
-                        <AlertTriangle size={20} />
-                      </span>
-                      <span>{fallbackMessage}</span>
-                    </div>
-                  ) : null}
-                </div>
-              )}
-
-              <main id="main-content" className="space-y-4">
-                {children}
-              </main>
+                <a
+                  href="/my-data"
+                  onClick={(e) => handleNavClick(e, '/my-data')}
+                  className="pressable inline-flex min-h-[56px] min-w-[56px] items-center justify-center rounded-chip border border-brand-soft bg-brand-wash px-3 py-1.5 text-[14px] font-semibold text-brand-deep no-underline shadow-card hover:bg-brand-soft"
+                >
+                  My Data
+                </a>
+              </nav>
             </div>
+          </header>
 
-            <TabBar activePath={activePath} onNavigate={onNavigate} />
+          <div className="app-scroll min-h-0 flex-1 bg-canvas px-5 pb-6 pt-3">
+            {(offline || isStoreUnavailable) && (
+              <div className="mb-4 space-y-3">
+                {offline ? (
+                  <div
+                    role="status"
+                    aria-live="polite"
+                    data-badge="true"
+                    className="flex items-start gap-3 rounded-card border-2 border-[#D97706] bg-[#FFFBEB] p-3.5 text-[15px] font-semibold text-[#92400E] shadow-card"
+                  >
+                    <span
+                      aria-hidden="true"
+                      className="mt-0.5 inline-flex shrink-0"
+                    >
+                      <WifiOff size={20} />
+                    </span>
+                    <span>
+                      You are offline. You can still view everything saved on
+                      this device.
+                    </span>
+                  </div>
+                ) : null}
+
+                {isStoreUnavailable ? (
+                  <div
+                    role="alert"
+                    data-badge="true"
+                    className="flex items-start gap-3 rounded-card border-2 border-[#BE123C] bg-[#FFF1F2] p-3.5 text-[15px] font-semibold text-[#881337] shadow-card"
+                  >
+                    <span
+                      aria-hidden="true"
+                      className="mt-0.5 inline-flex shrink-0"
+                    >
+                      <AlertTriangle size={20} />
+                    </span>
+                    <span>{fallbackMessage}</span>
+                  </div>
+                ) : null}
+              </div>
+            )}
+
+            <main id="main-content" className="space-y-4">
+              {children}
+            </main>
           </div>
-        </ToastProvider>
-      </PhoneFrame>
-    </DemoShell>
+
+          <TabBar activePath={activePath} onNavigate={onNavigate} />
+        </div>
+      </ToastProvider>
+    </PhoneFrame>
   );
 }
 
