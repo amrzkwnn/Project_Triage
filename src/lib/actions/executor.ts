@@ -117,6 +117,8 @@ export async function execute(
     }
 
     if (
+      action.step1ActionId === action.step2ActionId ||
+      step1 === step2 ||
       !isValidConfirmation(step1, action.step1ActionId) ||
       !isValidConfirmation(step2, action.step2ActionId)
     ) {

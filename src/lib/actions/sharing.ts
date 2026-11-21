@@ -32,7 +32,15 @@ function stripFamilyCodeWord(value: string, familyCodeWord?: string): string {
     return value;
   }
   const pattern = new RegExp(escapeRegExp(familyCodeWord.trim()), 'gi');
-  return value.replace(pattern, '').replace(/\s{2,}/g, ' ').trim();
+  let result = value;
+  for (let i = 0; i < 20; i += 1) {
+    const next = result.replace(pattern, '');
+    if (next === result) {
+      break;
+    }
+    result = next;
+  }
+  return result.replace(/\s{2,}/g, ' ').trim();
 }
 
 export function canShowAskFamily(settings: Settings): boolean {

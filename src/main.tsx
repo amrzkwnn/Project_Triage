@@ -59,7 +59,12 @@ export function CompanionApp() {
       screen = <MyDataPage onNavigate={navigate} />;
       break;
     case '/scam-shield':
-      screen = <ScamShieldPage onNavigate={navigate} />;
+      screen = (
+        <ScamShieldPage
+          initialQuery={locationState.search || undefined}
+          onNavigate={navigate}
+        />
+      );
       break;
     case '/photo-helper':
       screen = <PhotoHelperPage onNavigate={navigate} />;
@@ -73,7 +78,12 @@ export function CompanionApp() {
       );
       break;
     case '/media-check':
-      screen = <AiMediaCheckPage onNavigate={navigate} />;
+      screen = (
+        <AiMediaCheckPage
+          initialQuery={locationState.search || undefined}
+          onNavigate={navigate}
+        />
+      );
       break;
     case '/calendar':
       screen = <CalendarPage onNavigate={navigate} />;

@@ -368,6 +368,8 @@ describe('Server security properties (Properties 42, 43, 44)', () => {
           const pullGet = createIngestPullGetHandler(deps);
           const ackPost = createIngestAckPostHandler(deps);
           const decidePost = createDecidePostHandler({
+            tokenRegistry: registry,
+            rateLimiter,
             logger,
             env: { AI_API_KEY: secretApiKey },
             aiProvider: async () => ({
@@ -456,7 +458,10 @@ describe('Server security properties (Properties 42, 43, 44)', () => {
           const decideRes = await decidePost(
             new Request('https://companion.example/api/decide', {
               method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
+              headers: {
+                'Content-Type': 'application/json',
+                Authorization: `Bearer ${secretToken}`,
+              },
               body: JSON.stringify({
                 item: { channel, text: `Inspect ${secretContent}` },
               }),

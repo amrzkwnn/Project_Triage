@@ -9,10 +9,13 @@ import { hasLoneSurrogate, parseIngest } from '@/lib/inbox/parse';
 import { classify } from '@/lib/inbox/classify';
 import { detectEvent } from '@/lib/inbox/events';
 import { buildClaritySummary } from '@/lib/ai/summary';
-import type { TokenRegistry } from '@/lib/server/auth';
-import type { RateLimiter } from '@/lib/server/rateLimit';
+import { TokenRegistry } from '@/lib/server/auth';
+import { createRateLimiter, type RateLimiter } from '@/lib/server/rateLimit';
 import type { EncryptedRelayStore } from '@/lib/server/relay';
 import type { SafeLogger } from '@/lib/server/safeLog';
+
+const defaultTokenRegistry = new TokenRegistry();
+const defaultRateLimiter = createRateLimiter();
 
 export const MAX_INGEST_BYTES = 10 * 1024 * 1024;
 export const MAX_DECIDE_BYTES = 64 * 1024;
@@ -48,6 +51,9 @@ export type DecideAiProvider = (
 
 export type DecideRouteDeps = {
   logger: SafeLogger;
+  tokenRegistry?: TokenRegistry;
+  rateLimiter?: RateLimiter;
+  requireAuth?: boolean;
   now?: () => number;
   env?: Record<string, string | undefined>;
   aiProvider?: DecideAiProvider;
@@ -88,6 +94,50 @@ async function readUtf8BodyWithLimit(
     const parsedLen = Number(contentLengthHeader.trim());
     if (Number.isFinite(parsedLen) && parsedLen > maxBytes) {
       return { ok: false, kind: 'too-large' };
+    }
+  }
+
+  if (req.body && typeof req.body.getReader === 'function') {
+    const reader = req.body.getReader();
+    const chunks: Uint8Array[] = [];
+    let totalBytes = 0;
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (value) {
+          totalBytes += value.byteLength;
+          if (totalBytes > maxBytes) {
+            try {
+              await reader.cancel();
+            } catch {
+              // ignore cancel failures
+            }
+            return { ok: false, kind: 'too-large' };
+          }
+          chunks.push(value);
+        }
+      }
+    } finally {
+      try {
+        reader.releaseLock();
+      } catch {
+        // ignore lock release failures
+      }
+    }
+
+    const merged = new Uint8Array(totalBytes);
+    let offset = 0;
+    for (const chunk of chunks) {
+      merged.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+
+    try {
+      const text = new TextDecoder('utf-8', { fatal: true }).decode(merged);
+      return { ok: true, text };
+    } catch {
+      return { ok: false, kind: 'invalid-encoding' };
     }
   }
 
@@ -647,10 +697,37 @@ export function createDecidePostHandler(
 ): (req: Request) => Promise<Response> {
   const now = deps.now ?? Date.now;
   const route = '/api/decide';
+  const requireAuth = deps.requireAuth !== false;
+  const tokenRegistry = deps.tokenRegistry ?? defaultTokenRegistry;
+  const rateLimiter = deps.rateLimiter ?? defaultRateLimiter;
 
   return async function POST(req: Request): Promise<Response> {
     const startMs = now();
     try {
+      if (requireAuth) {
+        const auth = tokenRegistry.verifyToken(req);
+        if (!auth.ok) {
+          return logAndReturn(
+            deps.logger,
+            route,
+            startMs,
+            now,
+            jsonResponse(auth.body, auth.status)
+          );
+        }
+
+        const rl = rateLimiter.check(auth.tokenHash, now());
+        if (!rl.allowed) {
+          return logAndReturn(
+            deps.logger,
+            route,
+            startMs,
+            now,
+            jsonResponse(rl.body, rl.status)
+          );
+        }
+      }
+
       const bodyRead = await readUtf8BodyWithLimit(req, MAX_DECIDE_BYTES);
       if (!bodyRead.ok) {
         return logAndReturn(

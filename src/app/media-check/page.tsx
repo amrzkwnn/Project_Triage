@@ -36,8 +36,40 @@ const SUPPORTED_MEDIA_MIMES = new Set([
   'image/webp',
 ]);
 
+const FORWARDED_MEDIA_STORAGE_KEY = 'sdc_forwarded_media_image';
+
+export function readPreloadedMediaImageName(search?: string): string | undefined {
+  const raw =
+    search ?? (typeof window !== 'undefined' ? window.location.search : '');
+  if (!raw || raw.trim().length === 0) return undefined;
+  try {
+    const params = new URLSearchParams(raw.startsWith('?') ? raw.slice(1) : raw);
+    const name = params.get('image')?.trim();
+    return name && name.length > 0 ? name : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function base64ToUint8Array(base64: string): Uint8Array | undefined {
+  try {
+    if (typeof atob !== 'function') return undefined;
+    const binary = atob(base64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i += 1) {
+      bytes[i] = binary.charCodeAt(i);
+    }
+    return bytes;
+  } catch {
+    return undefined;
+  }
+}
+
 export type AiMediaCheckPageProps = {
   initialSettings?: Settings;
+  initialImageName?: string;
+  initialImageDataBase64?: string;
+  initialQuery?: string;
   initialOutcome?: MediaCheckOutcome;
   initialError?: string;
   vault?: Vault;
@@ -46,16 +78,22 @@ export type AiMediaCheckPageProps = {
 
 export function AiMediaCheckPage({
   initialSettings,
+  initialImageName,
+  initialImageDataBase64,
+  initialQuery,
   initialOutcome,
   initialError,
   vault,
   onNavigate,
 }: AiMediaCheckPageProps) {
+  const resolvedInitialImageName =
+    initialImageName ?? readPreloadedMediaImageName(initialQuery);
+
   const [settings, setSettings] = useState<Settings>(
     initialSettings ?? createDefaultSettings()
   );
   const [selectedFileName, setSelectedFileName] = useState<string | undefined>(
-    undefined
+    resolvedInitialImageName
   );
   const [outcome, setOutcome] = useState<MediaCheckOutcome | undefined>(
     initialOutcome
@@ -84,6 +122,45 @@ export function AiMediaCheckPage({
       void loadSettings();
     }
   }, [initialSettings, loadSettings]);
+
+  useEffect(() => {
+    const preloadedName =
+      initialImageName ?? readPreloadedMediaImageName(initialQuery);
+    if (!preloadedName) return;
+
+    setSelectedFileName(preloadedName);
+    if (initialOutcome) return;
+
+    let base64 = initialImageDataBase64;
+    if (!base64 && typeof window !== 'undefined') {
+      try {
+        const raw = window.sessionStorage.getItem(FORWARDED_MEDIA_STORAGE_KEY);
+        if (raw) {
+          const parsed = JSON.parse(raw) as {
+            name?: string;
+            dataBase64?: string;
+          };
+          if (parsed.name === preloadedName && parsed.dataBase64) {
+            base64 = parsed.dataBase64;
+          }
+        }
+      } catch {
+        // ignore storage errors
+      }
+    }
+
+    if (base64) {
+      const bytes = base64ToUint8Array(base64);
+      if (bytes && bytes.length > 0) {
+        void (async () => {
+          const provenance = await inspectProvenance(bytes);
+          const result = mediaResult(provenance);
+          setOutcome(result);
+          setStatusMessage(`Check finished: ${result.result}.`);
+        })();
+      }
+    }
+  }, [initialImageName, initialImageDataBase64, initialQuery, initialOutcome]);
 
   const handleBack = (
     event: React.MouseEvent<HTMLAnchorElement | HTMLButtonElement>

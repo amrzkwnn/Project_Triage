@@ -31,6 +31,8 @@ export type DecisionConfirmCardProps = {
   showAskFamily?: boolean;
   askFamilyLabel?: string;
   onAskFamily?: () => void;
+  showEnableSharingOffer?: boolean;
+  onEnableSharing?: () => void;
   className?: string;
 };
 
@@ -48,6 +50,8 @@ export function DecisionConfirmCard({
   showAskFamily = false,
   askFamilyLabel = 'Ask Family to Check',
   onAskFamily,
+  showEnableSharingOffer = false,
+  onEnableSharing,
   className = '',
 }: DecisionConfirmCardProps) {
   const isTier3 = tier === 3;
@@ -122,6 +126,16 @@ export function DecisionConfirmCard({
             onClick={onAskFamily}
           >
             {askFamilyLabel}
+          </SeniorButton>
+        ) : null}
+
+        {showEnableSharingOffer && onEnableSharing ? (
+          <SeniorButton
+            variant="secondary"
+            icon={<Users size={20} />}
+            onClick={onEnableSharing}
+          >
+            Turn On Family Sharing
           </SeniorButton>
         ) : null}
       </div>

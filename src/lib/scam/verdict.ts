@@ -56,6 +56,10 @@ const KNOWN_ORGS: readonly { pattern: RegExp; name: string }[] = [
   { pattern: /\bmaybank\b/i, name: 'Maybank' },
   { pattern: /\bcimb\b/i, name: 'CIMB' },
   { pattern: /\blhdn\b/i, name: 'LHDN' },
+  { pattern: /\bpos\s*laju\b|\bposlaju\b/i, name: 'PosLaju' },
+  { pattern: /\btnb\b/i, name: 'TNB' },
+  { pattern: /\bkwsp\b/i, name: 'KWSP' },
+  { pattern: /\bepf\b/i, name: 'EPF' },
   { pattern: /\bclinic\b/i, name: 'Clinic' },
 ];
 
@@ -130,7 +134,37 @@ const OFFICIAL_ORG_DOMAIN_ALIASES = new Map<string, readonly string[]>([
   ['maybank', ['maybank2u']],
   ['cimb', ['cimbclicks']],
   ['lhdn', ['hasil']],
+  ['poslaju', ['pos']],
+  ['tnb', ['mytnb']],
+  ['kwsp', ['epf']],
+  ['epf', ['kwsp']],
 ]);
+
+const LEGITIMATE_ORG_TLDS = new Set([
+  'com',
+  'com.my',
+  'gov.my',
+  'org.my',
+  'my',
+  'net',
+]);
+
+function getDomainSuffix(domain: string): string {
+  const parts = domain
+    .toLowerCase()
+    .split('.')
+    .filter((p) => p.length > 0);
+  if (parts.length < 2) {
+    return '';
+  }
+  if (parts.length >= 3) {
+    const lastTwo = `${parts[parts.length - 2]}.${parts[parts.length - 1]}`;
+    if (MULTI_PART_TLDS.has(lastTwo)) {
+      return lastTwo;
+    }
+  }
+  return parts[parts.length - 1];
+}
 
 function domainMatchesOrg(domain: string, claimedOrg: string): boolean {
   const orgSlug = claimedOrg.toLowerCase().replace(/[^a-z0-9]/g, '');
@@ -139,16 +173,20 @@ function domainMatchesOrg(domain: string, claimedOrg: string): boolean {
   }
 
   const primarySlug = getRegistrablePrimarySlug(domain);
-  if (primarySlug === orgSlug) {
-    return true;
-  }
-
   const aliases = OFFICIAL_ORG_DOMAIN_ALIASES.get(orgSlug);
-  if (aliases && aliases.includes(primarySlug)) {
-    return true;
+  const slugMatches =
+    primarySlug === orgSlug ||
+    Boolean(aliases && aliases.includes(primarySlug));
+
+  if (!slugMatches) {
+    return false;
   }
 
-  return false;
+  if (aliases !== undefined) {
+    return LEGITIMATE_ORG_TLDS.has(getDomainSuffix(domain));
+  }
+
+  return true;
 }
 
 function truncateForReason(value: string, maxLen: number): string {

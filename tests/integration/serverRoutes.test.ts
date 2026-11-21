@@ -4,13 +4,19 @@ import { POST as ingestEmailPost } from '@/app/api/ingest/email/route';
 import { GET as ingestPullGet } from '@/app/api/ingest/pull/route';
 import { POST as ingestAckPost } from '@/app/api/ingest/ack/route';
 import { POST as decidePost } from '@/app/api/decide/route';
-import { HSTS_HEADER, enforceHttpsAndHsts } from '@/middleware';
+import {
+  HSTS_HEADER,
+  applyHstsHeader,
+  enforceHttpsAndHsts,
+  getSecurityHeaders,
+} from '@/middleware';
 import { callDecideProxy } from '@/lib/ai/proxyClient';
 import {
   DEFAULT_DEV_SENIOR_ID,
   DEFAULT_DEV_TOKEN,
+  TokenRegistry,
 } from '@/lib/server/auth';
-import { MAX_INGEST_BYTES } from '@/lib/server/handlers';
+import { MAX_DECIDE_BYTES, MAX_INGEST_BYTES } from '@/lib/server/handlers';
 import { RELAY_TTL_MS } from '@/lib/server/relay';
 import { createSafeLogger } from '@/lib/server/safeLog';
 import {
@@ -380,7 +386,10 @@ describe('Server API routes & middleware integration', () => {
       const res = await decidePost(
         new Request('https://companion.example/api/decide', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${DEFAULT_DEV_TOKEN}`,
+          },
           body: JSON.stringify({
             item: {
               channel: 'email',
@@ -468,10 +477,15 @@ describe('Server API routes & middleware integration', () => {
     });
 
     it('rejects missing items, extra items/fields, and oversized payloads with 400', async () => {
+      const authHeaders = {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${DEFAULT_DEV_TOKEN}`,
+      };
+
       const missingItem = await decidePost(
         new Request('https://companion.example/api/decide', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: authHeaders,
           body: JSON.stringify({}),
         })
       );
@@ -480,7 +494,7 @@ describe('Server API routes & middleware integration', () => {
       const extraTopLevel = await decidePost(
         new Request('https://companion.example/api/decide', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: authHeaders,
           body: JSON.stringify({
             item: { channel: 'smsPaste', text: 'Hello' },
             extraItems: [{ channel: 'email', text: 'Another' }],
@@ -492,7 +506,7 @@ describe('Server API routes & middleware integration', () => {
       const extraItemField = await decidePost(
         new Request('https://companion.example/api/decide', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: authHeaders,
           body: JSON.stringify({
             item: {
               channel: 'smsPaste',
@@ -507,7 +521,7 @@ describe('Server API routes & middleware integration', () => {
       const oversized = await decidePost(
         new Request('https://companion.example/api/decide', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: authHeaders,
           body: JSON.stringify({
             item: {
               channel: 'email',
@@ -517,6 +531,134 @@ describe('Server API routes & middleware integration', () => {
         })
       );
       expect(oversized.status).toBe(400);
+    });
+
+    it('returns 401 for unauthenticated /api/decide requests and 429 when rate limit is exceeded', async () => {
+      const unauth = await decidePost(
+        new Request('https://companion.example/api/decide', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            item: { channel: 'email', text: 'Hello' },
+          }),
+        })
+      );
+      expect(unauth.status).toBe(401);
+
+      const badToken = await decidePost(
+        new Request('https://companion.example/api/decide', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: 'Bearer invalid-token',
+          },
+          body: JSON.stringify({
+            item: { channel: 'email', text: 'Hello' },
+          }),
+        })
+      );
+      expect(badToken.status).toBe(401);
+
+      for (let i = 0; i < 60; i += 1) {
+        const okRes = await decidePost(
+          new Request('https://companion.example/api/decide', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${DEFAULT_DEV_TOKEN}`,
+            },
+            body: JSON.stringify({
+              item: { channel: 'smsPaste', text: `Check ${i}` },
+            }),
+          })
+        );
+        expect(okRes.status).toBe(200);
+      }
+
+      const limited = await decidePost(
+        new Request('https://companion.example/api/decide', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${DEFAULT_DEV_TOKEN}`,
+          },
+          body: JSON.stringify({
+            item: { channel: 'smsPaste', text: 'Check 61' },
+          }),
+        })
+      );
+      expect(limited.status).toBe(429);
+    });
+
+    it('aborts streaming body reads as soon as cumulative bytes exceed limit without buffering full stream', async () => {
+      let chunksPulled = 0;
+      const chunk = new Uint8Array(16 * 1024).fill(65); // 16 KB per chunk
+      const stream = new ReadableStream<Uint8Array>({
+        pull(controller) {
+          chunksPulled += 1;
+          controller.enqueue(chunk);
+        },
+      });
+
+      const req = new Request('https://companion.example/api/decide', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${DEFAULT_DEV_TOKEN}`,
+        },
+        body: stream,
+        duplex: 'half',
+      } as RequestInit);
+
+      const res = await decidePost(req);
+      expect(res.status).toBe(400);
+      // MAX_DECIDE_BYTES is 64 KB -> pulling 5 chunks (80 KB) exceeds limit and cancels immediately
+      expect(chunksPulled).toBeLessThanOrEqual(Math.ceil(MAX_DECIDE_BYTES / chunk.byteLength) + 2);
+    });
+  });
+
+  describe('TokenRegistry production guard & env token support', () => {
+    it('disables DEFAULT_DEV_TOKEN when NODE_ENV is production and supports INGEST_API_TOKEN', () => {
+      const prodRegistry = new TokenRegistry({
+        env: {
+          NODE_ENV: 'production',
+          INGEST_API_TOKEN: 'prod-secret-token-42',
+          INGEST_SENIOR_ID: 'senior-prod-1',
+        },
+      });
+
+      const devAuth = prodRegistry.verifyToken(
+        new Request('https://companion.example/api/ingest', {
+          headers: { Authorization: `Bearer ${DEFAULT_DEV_TOKEN}` },
+        })
+      );
+      expect(devAuth.ok).toBe(false);
+
+      const prodAuth = prodRegistry.verifyToken(
+        new Request('https://companion.example/api/ingest', {
+          headers: { Authorization: 'Bearer prod-secret-token-42' },
+        })
+      );
+      expect(prodAuth.ok).toBe(true);
+      if (prodAuth.ok) {
+        expect(prodAuth.seniorId).toBe('senior-prod-1');
+      }
+
+      const defaultSeniorProd = new TokenRegistry({
+        env: {
+          NODE_ENV: 'production',
+          INGEST_API_TOKEN: 'prod-default-senior-tok',
+        },
+      });
+      const defaultSeniorAuth = defaultSeniorProd.verifyToken(
+        new Request('https://companion.example/api/ingest', {
+          headers: { Authorization: 'Bearer prod-default-senior-tok' },
+        })
+      );
+      expect(defaultSeniorAuth.ok).toBe(true);
+      if (defaultSeniorAuth.ok) {
+        expect(defaultSeniorAuth.seniorId).toBe(DEFAULT_DEV_SENIOR_ID);
+      }
     });
   });
 
@@ -541,11 +683,30 @@ describe('Server API routes & middleware integration', () => {
       );
     });
 
-    it('returns null for https requests', () => {
+    it('returns null for https requests without nextResponse and applies HSTS header when nextResponse or helpers are used', () => {
       const httpsReq = new Request('https://companion.example/api/ingest/pull', {
         headers: { 'x-forwarded-proto': 'https' },
       });
       expect(enforceHttpsAndHsts(httpsReq)).toBeNull();
+
+      const withRes = enforceHttpsAndHsts(
+        httpsReq,
+        new Response('ok', { status: 200 })
+      );
+      expect(withRes).not.toBeNull();
+      expect(withRes!.status).toBe(200);
+      expect(withRes!.headers.get('strict-transport-security')).toBe(
+        HSTS_HEADER
+      );
+
+      const applied = applyHstsHeader(new Response('ok', { status: 200 }));
+      expect(applied.headers.get('strict-transport-security')).toBe(
+        HSTS_HEADER
+      );
+
+      expect(getSecurityHeaders(httpsReq)).toEqual({
+        'Strict-Transport-Security': HSTS_HEADER,
+      });
 
       const noHeaderReq = new Request('https://companion.example/api/ingest/pull');
       expect(enforceHttpsAndHsts(noHeaderReq)).toBeNull();

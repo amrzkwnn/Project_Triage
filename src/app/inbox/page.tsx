@@ -25,32 +25,47 @@ import { confirmFromTap } from '@/lib/actions/confirmation';
 import { execute } from '@/lib/actions/executor';
 import { canShowAskFamily, shareItemWithFamily } from '@/lib/actions/sharing';
 import { analyze } from '@/lib/ai/engine';
+import { isDuplicateEvent } from '@/lib/calendar/snap';
 import { availableForwardActions } from '@/lib/inbox/events';
 import { filterByTab, filterPromotions } from '@/lib/inbox/order';
 import { normalizeSource, parseIngestQuery } from '@/lib/inbox/parse';
 import { createPrescriptionItem } from '@/lib/inbox/prescription';
 import {
   createDefaultSettings,
+  type Attachment,
   type CalendarEvent,
   type Channel,
+  type DetectedEvent,
   type GroupCategory,
   type InboxItem,
   type InboxItemDraft,
   type Settings,
 } from '@/lib/types';
-import { admit } from '@/lib/vault/consent';
+import { CHANNEL_LABELS, admit } from '@/lib/vault/consent';
 import type { Vault } from '@/lib/vault/schema';
+import { setChannelToggle } from '@/lib/vault/settings';
 import { createVault } from '@/lib/vault/store';
+
+export const FORWARDED_MEDIA_STORAGE_KEY = 'sdc_forwarded_media_image';
 
 type InboxFilterTab = GroupCategory | 'All' | 'Promotion';
 
 export type UnifiedInboxPageProps = {
   initialSettings?: Settings;
   initialItems?: InboxItem[];
+  initialEvents?: CalendarEvent[];
   initialQuery?: string;
   initialReconnectMessage?: string;
+  initialPendingCalendarForward?: {
+    item: InboxItem;
+    event: DetectedEvent;
+    isDuplicate: boolean;
+  };
+  initialChannelOffChannel?: Channel;
   vault?: Vault;
   onNavigate?: (href: string) => void;
+  onForwardToScamCheck?: (text: string) => void;
+  onForwardToAiImageCheck?: (attachment: Attachment) => void;
 };
 
 const GROUP_TABS: readonly InboxFilterTab[] = [
@@ -224,18 +239,142 @@ export async function ingestInboxDraftWithConsent(params: {
   return { ok: true, item };
 }
 
+export async function processPrescriptionPhotoWithConsent(params: {
+  settings: Settings;
+  photo: Attachment;
+  extractedText: string;
+  ocrConfidence: number;
+  vault?: Pick<Vault, 'putItem'>;
+}): Promise<
+  | {
+      ok: true;
+      item: InboxItem;
+      needsRetake: boolean;
+      retakeMessage?: string;
+    }
+  | { ok: false; channelOff?: Channel; errorMessage: string }
+> {
+  const gate = admit(params.settings, { source: 'photos' });
+  if (!gate.admit) {
+    return {
+      ok: false,
+      channelOff: 'photos',
+      errorMessage: gate.message,
+    };
+  }
+
+  const targetVault = params.vault ?? {
+    putItem: async () => ({ ok: true as const, value: undefined }),
+  };
+
+  const rxRes = await createPrescriptionItem({
+    photo: params.photo,
+    extractedText: params.extractedText,
+    ocrConfidence: params.ocrConfidence,
+    vault: targetVault,
+  });
+
+  if (!rxRes.ok) {
+    return {
+      ok: false,
+      errorMessage: rxRes.error.message,
+    };
+  }
+
+  return {
+    ok: true,
+    item: rxRes.value.item,
+    needsRetake: rxRes.value.needsRetake,
+    retakeMessage: rxRes.value.retakeMessage,
+  };
+}
+
+export function prepareCalendarForward(
+  item: InboxItem,
+  existingEvents: readonly CalendarEvent[]
+):
+  | { item: InboxItem; event: DetectedEvent; isDuplicate: boolean }
+  | undefined {
+  if (!item.detectedEvent) return undefined;
+  return {
+    item,
+    event: item.detectedEvent,
+    isDuplicate: isDuplicateEvent(item.detectedEvent, existingEvents),
+  };
+}
+
+export async function confirmForwardToCalendarWithVault(params: {
+  item: InboxItem;
+  event: DetectedEvent;
+  vault?: Pick<Vault, 'putEvent'>;
+}): Promise<
+  | { ok: true; createdEvent: CalendarEvent }
+  | { ok: false; errorMessage: string }
+> {
+  const actionId = `inbox-cal-${params.item.id}`;
+  const confirmation = confirmFromTap(actionId);
+  let createdEvent: CalendarEvent | undefined;
+
+  const res = await execute(
+    {
+      actionId,
+      kind: 'forwardToCalendar',
+      event: params.event,
+      itemId: params.item.id,
+    },
+    confirmation,
+    {
+      saveCalendarEvent: async (ev, itemId) => {
+        const calEvent: CalendarEvent = {
+          id: `ev-${itemId}`,
+          title: ev.title,
+          date: ev.date,
+          time: ev.time,
+          ...(ev.location ? { location: ev.location } : {}),
+          category: 'Medical',
+          sourceItemId: itemId,
+          createdAt: new Date().toISOString(),
+        };
+        createdEvent = calEvent;
+        if (!params.vault) return { ok: true, value: undefined };
+        const putRes = await params.vault.putEvent(calEvent);
+        return putRes.ok
+          ? { ok: true, value: undefined }
+          : { ok: false, error: putRes.error.message };
+      },
+      sendFamilyShare: async () => ({ ok: true, value: undefined }),
+      runProtectedSideEffect: async () => ({ ok: true, value: undefined }),
+      runEraseAll: async () => ({ ok: true, value: undefined }),
+    }
+  );
+
+  if (!res.ok) {
+    return { ok: false, errorMessage: res.error.message };
+  }
+
+  return { ok: true, createdEvent: createdEvent! };
+}
+
 export function UnifiedInboxPage({
   initialSettings,
   initialItems,
+  initialEvents,
   initialQuery,
   initialReconnectMessage,
+  initialPendingCalendarForward,
+  initialChannelOffChannel,
   vault,
   onNavigate,
+  onForwardToScamCheck,
+  onForwardToAiImageCheck,
 }: UnifiedInboxPageProps) {
   const [settings, setSettings] = useState<Settings>(
     initialSettings ?? createDefaultSettings()
   );
   const [items, setItems] = useState<InboxItem[]>(initialItems ?? []);
+  const [existingEvents, setExistingEvents] = useState<CalendarEvent[]>(
+    initialEvents ?? []
+  );
   const [activeTab, setActiveTab] = useState<InboxFilterTab>('All');
   const [showManualForm, setShowManualForm] = useState<boolean>(false);
   const [pasteSource, setPasteSource] = useState<Channel>('smsPaste');
@@ -252,7 +391,25 @@ export function UnifiedInboxPage({
     () => evaluateInitialQuery(initialQuery).error
   );
   const [statusMessage, setStatusMessage] = useState<string>('');
-  const [actionError, setActionError] = useState<string | undefined>(undefined);
+  const [actionError, setActionError] = useState<string | undefined>(
+    initialChannelOffChannel
+      ? admit(initialSettings ?? createDefaultSettings(), {
+          source: initialChannelOffChannel,
+        }).admit
+        ? undefined
+        : (
+            admit(initialSettings ?? createDefaultSettings(), {
+              source: initialChannelOffChannel,
+            }) as { admit: false; message: string }
+          ).message
+      : undefined
+  );
+  const [channelOffChannel, setChannelOffChannel] = useState<
+    Channel | undefined
+  >(initialChannelOffChannel);
+  const [pendingCalendarForward, setPendingCalendarForward] = useState<
+    { item: InboxItem; event: DetectedEvent; isDuplicate: boolean } | undefined
+  >(initialPendingCalendarForward);
   const [pendingFamilyItemId, setPendingFamilyItemId] = useState<
     string | undefined
   >(undefined);
@@ -264,9 +421,10 @@ export function UnifiedInboxPage({
 
   const loadData = useCallback(async () => {
     if (!resolvedVault) return;
-    const [settingsRes, itemsRes] = await Promise.all([
+    const [settingsRes, itemsRes, eventsRes] = await Promise.all([
       resolvedVault.getSettings(),
       resolvedVault.listItems(),
+      resolvedVault.listEvents(),
     ]);
     if (settingsRes.ok) {
       setSettings(settingsRes.value);
@@ -274,13 +432,20 @@ export function UnifiedInboxPage({
     if (itemsRes.ok) {
       setItems(itemsRes.value);
     }
+    if (eventsRes.ok) {
+      setExistingEvents(eventsRes.value);
+    }
   }, [resolvedVault]);
 
   useEffect(() => {
-    if (initialSettings === undefined || initialItems === undefined) {
+    if (
+      initialSettings === undefined ||
+      initialItems === undefined ||
+      initialEvents === undefined
+    ) {
       void loadData();
     }
-  }, [initialSettings, initialItems, loadData]);
+  }, [initialSettings, initialItems, initialEvents, loadData]);
 
   useEffect(() => {
     if (initialQuery !== undefined) {
@@ -314,6 +479,18 @@ export function UnifiedInboxPage({
 
   const ingestDraft = async (draft: InboxItemDraft): Promise<boolean> => {
     setActionError(undefined);
+    setChannelOffChannel(undefined);
+    const normalized = normalizeSource(draft.source);
+    if (normalized) {
+      const gate = admit(settings, { source: normalized });
+      if (!gate.admit) {
+        setChannelOffChannel(normalized);
+        setActionError(gate.message);
+        setStatusMessage(gate.message);
+        return false;
+      }
+    }
+
     const result = await ingestInboxDraftWithConsent({
       draft,
       settings,
@@ -329,6 +506,28 @@ export function UnifiedInboxPage({
     setItems((prev) => [result.item, ...prev]);
     setStatusMessage('Message added to your Unified Inbox.');
     return true;
+  };
+
+  const handleTurnOnChannel = async (channel: Channel) => {
+    setActionError(undefined);
+    if (!resolvedVault) {
+      setSettings((prev) => ({
+        ...prev,
+        channels: { ...prev.channels, [channel]: true },
+      }));
+      setChannelOffChannel(undefined);
+      setStatusMessage(`${CHANNEL_LABELS[channel]} is now ON.`);
+      return;
+    }
+    const res = await setChannelToggle(resolvedVault, settings, channel, true);
+    if (!res.ok) {
+      setActionError(res.error.message);
+      setStatusMessage(res.error.message);
+      return;
+    }
+    setSettings(res.settings);
+    setChannelOffChannel(undefined);
+    setStatusMessage(`${CHANNEL_LABELS[channel]} is now ON. You can try again now.`);
   };
 
   const handleConfirmQueryDraft = async () => {
@@ -365,6 +564,15 @@ export function UnifiedInboxPage({
     const file = event.target.files?.[0];
     if (!file) return;
     setActionError(undefined);
+    setChannelOffChannel(undefined);
+
+    const gate = admit(settings, { source: 'photos' });
+    if (!gate.admit) {
+      setChannelOffChannel('photos');
+      setActionError(gate.message);
+      setStatusMessage(gate.message);
+      return;
+    }
 
     let dataBase64: string | undefined;
     try {
@@ -377,11 +585,8 @@ export function UnifiedInboxPage({
       dataBase64 = undefined;
     }
 
-    const targetVault = resolvedVault ?? {
-      putItem: async () => ({ ok: true as const, value: undefined }),
-    };
-
-    const rxRes = await createPrescriptionItem({
+    const rxRes = await processPrescriptionPhotoWithConsent({
+      settings,
       photo: {
         id: `rx-photo-${Date.now()}`,
         mime: file.type || 'image/jpeg',
@@ -391,68 +596,61 @@ export function UnifiedInboxPage({
       },
       extractedText: rxText,
       ocrConfidence: rxText.trim().length > 0 ? 0.85 : 0.3,
-      vault: targetVault,
+      vault: resolvedVault,
     });
 
     if (!rxRes.ok) {
-      setActionError(rxRes.error.message);
-      setStatusMessage(rxRes.error.message);
+      if (rxRes.channelOff) {
+        setChannelOffChannel(rxRes.channelOff);
+      }
+      setActionError(rxRes.errorMessage);
+      setStatusMessage(rxRes.errorMessage);
       return;
     }
 
-    setItems((prev) => [rxRes.value.item, ...prev]);
+    setItems((prev) => [rxRes.item, ...prev]);
     setRxText('');
     setShowManualForm(false);
     setStatusMessage(
-      rxRes.value.needsRetake
-        ? rxRes.value.retakeMessage ?? 'Prescription photo is hard to read.'
+      rxRes.needsRetake
+        ? rxRes.retakeMessage ?? 'Prescription photo is hard to read.'
         : 'Prescription photo saved to Personal and Important.'
     );
   };
 
-  const handleForwardToCalendar = async (item: InboxItem) => {
+  const handleRequestForwardToCalendar = async (item: InboxItem) => {
     if (!item.detectedEvent) return;
-    const actionId = `inbox-cal-${item.id}`;
-    const confirmation = confirmFromTap(actionId);
-
-    const res = await execute(
-      {
-        actionId,
-        kind: 'forwardToCalendar',
-        event: item.detectedEvent,
-        itemId: item.id,
-      },
-      confirmation,
-      {
-        saveCalendarEvent: async (ev, itemId) => {
-          if (!resolvedVault) return { ok: true, value: undefined };
-          const calEvent: CalendarEvent = {
-            id: `ev-${itemId}`,
-            title: ev.title,
-            date: ev.date,
-            time: ev.time,
-            location: ev.location,
-            category: 'Medical',
-            sourceItemId: itemId,
-            createdAt: new Date().toISOString(),
-          };
-          const putRes = await resolvedVault.putEvent(calEvent);
-          return putRes.ok
-            ? { ok: true, value: undefined }
-            : { ok: false, error: putRes.error.message };
-        },
-        sendFamilyShare: async () => ({ ok: true, value: undefined }),
-        runProtectedSideEffect: async () => ({ ok: true, value: undefined }),
-        runEraseAll: async () => ({ ok: true, value: undefined }),
+    setActionError(undefined);
+    let currentEvents = existingEvents;
+    if (resolvedVault) {
+      const listRes = await resolvedVault.listEvents();
+      if (listRes.ok) {
+        currentEvents = listRes.value;
+        setExistingEvents(listRes.value);
       }
-    );
+    }
+    const prepared = prepareCalendarForward(item, currentEvents);
+    if (prepared) {
+      setPendingCalendarForward(prepared);
+    }
+  };
+
+  const handleConfirmForwardToCalendar = async () => {
+    if (!pendingCalendarForward) return;
+    const { item, event: detectedEvent } = pendingCalendarForward;
+
+    const res = await confirmForwardToCalendarWithVault({
+      item,
+      event: detectedEvent,
+      vault: resolvedVault,
+    });
 
     if (res.ok) {
-      setStatusMessage(
-        `Added "${item.detectedEvent.title}" to your Calendar.`
-      );
+      setExistingEvents((prev) => [...prev, res.createdEvent]);
+      setPendingCalendarForward(undefined);
+      setStatusMessage(`Added "${detectedEvent.title}" to your Calendar.`);
     } else {
-      setActionError(res.error.message);
+      setActionError(res.errorMessage);
     }
   };
 
@@ -611,9 +809,35 @@ export function UnifiedInboxPage({
       {actionError ? (
         <div
           role="alert"
-          className="rounded-2xl border-2 border-[#BE123C] bg-[#FFF1F2] p-4 text-[18px] font-semibold text-[#881337]"
+          data-card="true"
+          className="rounded-2xl border-2 border-[#BE123C] bg-[#FFF1F2] p-4 space-y-3 text-[18px] font-semibold text-[#881337]"
         >
-          {actionError}
+          <p>{actionError}</p>
+          {channelOffChannel ? (
+            <div className="flex flex-wrap gap-3">
+              <SeniorButton
+                variant="primary"
+                icon={<Check size={20} />}
+                onClick={() => void handleTurnOnChannel(channelOffChannel)}
+              >
+                Turn On {CHANNEL_LABELS[channelOffChannel]}
+              </SeniorButton>
+              <SeniorButton
+                variant="secondary"
+                href="/my-data"
+                onClick={
+                  onNavigate
+                    ? (e) => {
+                        e.preventDefault();
+                        onNavigate('/my-data');
+                      }
+                    : undefined
+                }
+              >
+                Open My Data
+              </SeniorButton>
+            </div>
+          ) : null}
         </div>
       ) : null}
 
@@ -866,47 +1090,83 @@ export function UnifiedInboxPage({
                       <SeniorButton
                         variant="primary"
                         icon={<Calendar size={20} />}
-                        onClick={() => void handleForwardToCalendar(item)}
+                        onClick={() =>
+                          void handleRequestForwardToCalendar(item)
+                        }
                       >
                         Forward to Calendar
                       </SeniorButton>
                     ) : null}
 
-                    {actions.includes('checkScam') ? (
-                      <SeniorButton
-                        variant="warn"
-                        href="/scam-shield"
-                        icon={<ShieldAlert size={20} />}
-                        onClick={
-                          onNavigate
-                            ? (e) => {
-                                e.preventDefault();
-                                onNavigate('/scam-shield');
+                    {actions.includes('checkScam')
+                      ? (() => {
+                          const scamHref = `/scam-shield?text=${encodeURIComponent(item.text)}`;
+                          return (
+                            <SeniorButton
+                              variant="warn"
+                              href={scamHref}
+                              icon={<ShieldAlert size={20} />}
+                              onClick={
+                                onForwardToScamCheck || onNavigate
+                                  ? (e) => {
+                                      e.preventDefault();
+                                      if (onForwardToScamCheck) {
+                                        onForwardToScamCheck(item.text);
+                                      } else if (onNavigate) {
+                                        onNavigate(scamHref);
+                                      }
+                                    }
+                                  : undefined
                               }
-                            : undefined
-                        }
-                      >
-                        Forward to Scam Check
-                      </SeniorButton>
-                    ) : null}
+                            >
+                              Forward to Scam Check
+                            </SeniorButton>
+                          );
+                        })()
+                      : null}
 
-                    {actions.includes('checkAiImage') ? (
-                      <SeniorButton
-                        variant="secondary"
-                        href="/media-check"
-                        icon={<ScanEye size={20} />}
-                        onClick={
-                          onNavigate
-                            ? (e) => {
-                                e.preventDefault();
-                                onNavigate('/media-check');
-                              }
-                            : undefined
-                        }
-                      >
-                        Forward to AI Image Check
-                      </SeniorButton>
-                    ) : null}
+                    {actions.includes('checkAiImage')
+                      ? (() => {
+                          const firstImage = item.attachments.find((a) =>
+                            a.mime.toLowerCase().startsWith('image/')
+                          );
+                          const mediaHref = firstImage
+                            ? `/media-check?image=${encodeURIComponent(firstImage.name)}`
+                            : '/media-check';
+                          return (
+                            <SeniorButton
+                              variant="secondary"
+                              href={mediaHref}
+                              icon={<ScanEye size={20} />}
+                              onClick={(e) => {
+                                if (firstImage && typeof window !== 'undefined') {
+                                  try {
+                                    window.sessionStorage.setItem(
+                                      FORWARDED_MEDIA_STORAGE_KEY,
+                                      JSON.stringify({
+                                        name: firstImage.name,
+                                        mime: firstImage.mime,
+                                        dataBase64: firstImage.dataBase64,
+                                      })
+                                    );
+                                  } catch {
+                                    // ignore storage quota failures
+                                  }
+                                }
+                                if (onForwardToAiImageCheck && firstImage) {
+                                  e.preventDefault();
+                                  onForwardToAiImageCheck(firstImage);
+                                } else if (onNavigate) {
+                                  e.preventDefault();
+                                  onNavigate(mediaHref);
+                                }
+                              }}
+                            >
+                              Forward to AI Image Check
+                            </SeniorButton>
+                          );
+                        })()
+                      : null}
 
                     {actions.includes('shareWithFamily') ? (
                       <SeniorButton
@@ -918,6 +1178,59 @@ export function UnifiedInboxPage({
                       </SeniorButton>
                     ) : null}
                   </div>
+
+                  {pendingCalendarForward?.item.id === item.id ? (
+                    <div
+                      role="region"
+                      aria-label="Confirm forward to calendar"
+                      className="rounded-xl border-2 border-[#0F766E] bg-[#F0FDFA] p-4 space-y-3"
+                    >
+                      <p className="text-[20px] font-bold text-[#115E59]">
+                        Add to Calendar?
+                      </p>
+                      <p className="text-[18px] font-semibold text-[#111827]">
+                        {pendingCalendarForward.event.title}
+                      </p>
+                      <p className="text-[18px] text-[#111827]">
+                        Date: {pendingCalendarForward.event.date}
+                        {pendingCalendarForward.event.time
+                          ? ` • Time: ${pendingCalendarForward.event.time}`
+                          : ''}
+                        {pendingCalendarForward.event.location
+                          ? ` • Location: ${pendingCalendarForward.event.location}`
+                          : ''}
+                      </p>
+                      {pendingCalendarForward.isDuplicate ? (
+                        <p
+                          role="alert"
+                          className="rounded-lg border-2 border-[#D97706] bg-[#FFFBEB] p-3 text-[18px] font-semibold text-[#92400E]"
+                        >
+                          A similar event already exists on{' '}
+                          {pendingCalendarForward.event.date}. Confirm to add
+                          this one too, or cancel.
+                        </p>
+                      ) : null}
+                      <div className="flex flex-wrap gap-3">
+                        <SeniorButton
+                          variant="safe"
+                          icon={<Check size={20} />}
+                          onClick={() => void handleConfirmForwardToCalendar()}
+                        >
+                          Confirm
+                        </SeniorButton>
+                        <SeniorButton
+                          variant="secondary"
+                          icon={<X size={20} />}
+                          onClick={() => {
+                            setPendingCalendarForward(undefined);
+                            setStatusMessage('Calendar addition cancelled.');
+                          }}
+                        >
+                          Cancel
+                        </SeniorButton>
+                      </div>
+                    </div>
+                  ) : null}
 
                   {pendingFamilyItemId === item.id ? (
                     <div

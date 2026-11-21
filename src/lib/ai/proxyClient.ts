@@ -27,6 +27,7 @@ export type DecideProxyError = {
 
 const DEFAULT_TIMEOUT_MS = 10_000;
 const DEFAULT_ENDPOINT = '/api/decide';
+const DEFAULT_PROXY_TOKEN = 'dev-senior-token-1';
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return (
@@ -54,11 +55,13 @@ export async function callDecideProxy(
     fetchFn?: typeof fetch;
     timeoutMs?: number;
     endpoint?: string;
+    token?: string;
   }
 ): Promise<Result<DecideProxyResponse, DecideProxyError>> {
   const fetchFn = deps?.fetchFn ?? globalThis.fetch;
   const timeoutMs = deps?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const endpoint = deps?.endpoint ?? DEFAULT_ENDPOINT;
+  const token = deps?.token ?? DEFAULT_PROXY_TOKEN;
 
   if (typeof fetchFn !== 'function') {
     return {
@@ -86,10 +89,17 @@ export async function callDecideProxy(
   });
 
   try {
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+    };
+    if (token.trim().length > 0) {
+      headers.Authorization = `Bearer ${token.trim()}`;
+    }
+
     const fetchPromise = Promise.resolve().then(() =>
       fetchFn(endpoint, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify(payload),
         signal: controller.signal,
       })

@@ -21,6 +21,7 @@ import {
   OLD_PRINT_SCAN_STEPS,
   PHOTO_PRESETS,
   applyPhotoPreset,
+  getPresetPreviewFilter,
   type PhotoPreset,
 } from '@/lib/photo/presets';
 import { createDefaultSettings, type Settings } from '@/lib/types';
@@ -28,10 +29,38 @@ import type { Vault } from '@/lib/vault/schema';
 import { setChannelToggle } from '@/lib/vault/settings';
 import { createVault } from '@/lib/vault/store';
 
+function detectImageMime(bytes: Uint8Array, fallback = 'image/jpeg'): string {
+  if (
+    bytes.length >= 8 &&
+    bytes[0] === 0x89 &&
+    bytes[1] === 0x50 &&
+    bytes[2] === 0x4e &&
+    bytes[3] === 0x47
+  ) {
+    return 'image/png';
+  }
+  if (bytes.length >= 2 && bytes[0] === 0xff && bytes[1] === 0xd8) {
+    return 'image/jpeg';
+  }
+  return fallback;
+}
+
+function bytesToDataUrl(bytes: Uint8Array, mime?: string): string {
+  const resolvedMime = detectImageMime(bytes, mime || 'image/jpeg');
+  let binary = '';
+  for (let i = 0; i < bytes.length; i += 1) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  const b64 = typeof btoa === 'function' ? btoa(binary) : '';
+  return `data:${resolvedMime};base64,${b64}`;
+}
+
 export type PhotoHelperPageProps = {
   initialSettings?: Settings;
   initialPhotoName?: string;
   initialPhotoBytes?: Uint8Array;
+  initialEditedBytes?: Uint8Array;
+  initialActivePreset?: PhotoPreset;
   initialError?: string;
   vault?: Vault;
   onNavigate?: (href: string) => void;
@@ -41,6 +70,8 @@ export function PhotoHelperPage({
   initialSettings,
   initialPhotoName,
   initialPhotoBytes,
+  initialEditedBytes,
+  initialActivePreset,
   initialError,
   vault,
   onNavigate,
@@ -51,14 +82,31 @@ export function PhotoHelperPage({
   const [photoName, setPhotoName] = useState<string | undefined>(
     initialPhotoName
   );
+  const [photoMime, setPhotoMime] = useState<string>('image/jpeg');
   const [originalBytes, setOriginalBytes] = useState<Uint8Array | undefined>(
     initialPhotoBytes
   );
   const [editedBytes, setEditedBytes] = useState<Uint8Array | undefined>(
-    undefined
+    initialEditedBytes
   );
   const [activePreset, setActivePreset] = useState<PhotoPreset | undefined>(
-    undefined
+    initialActivePreset
+  );
+
+  const originalPreviewUrl = useMemo(
+    () =>
+      originalBytes && originalBytes.length > 0
+        ? bytesToDataUrl(originalBytes, photoMime)
+        : undefined,
+    [originalBytes, photoMime]
+  );
+
+  const editedPreviewUrl = useMemo(
+    () =>
+      editedBytes && editedBytes.length > 0
+        ? bytesToDataUrl(editedBytes, photoMime)
+        : undefined,
+    [editedBytes, photoMime]
   );
   const [takenNames, setTakenNames] = useState<string[]>([]);
   const [savedFileName, setSavedFileName] = useState<string | undefined>(
@@ -132,6 +180,7 @@ export function PhotoHelperPage({
       const buffer = await file.arrayBuffer();
       setOriginalBytes(new Uint8Array(buffer));
       setPhotoName(file.name);
+      setPhotoMime(file.type || 'image/jpeg');
       setStatusMessage(
         `Photo "${file.name}" is ready. Pick one of the 4 easy buttons below.`
       );
@@ -351,6 +400,13 @@ export function PhotoHelperPage({
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <div className="rounded-xl border-2 border-[#111827] bg-[#FAF9F6] p-4 space-y-2">
               <p className="text-[20px] font-bold text-[#111827]">Before</p>
+              {originalPreviewUrl ? (
+                <img
+                  src={originalPreviewUrl}
+                  alt="Original photo preview"
+                  className="max-h-60 w-full rounded-lg border-2 border-[#111827] bg-white object-contain"
+                />
+              ) : null}
               <p className="text-[18px] text-[#111827]">
                 {photoName
                   ? `Original photo (${photoName}) stays untouched.`
@@ -359,6 +415,14 @@ export function PhotoHelperPage({
             </div>
             <div className="rounded-xl border-2 border-[#0F766E] bg-[#F0FDFA] p-4 space-y-2">
               <p className="text-[20px] font-bold text-[#115E59]">After</p>
+              {editedPreviewUrl && activePreset ? (
+                <img
+                  src={editedPreviewUrl}
+                  alt="Improved photo preview"
+                  style={{ filter: getPresetPreviewFilter(activePreset) }}
+                  className="max-h-60 w-full rounded-lg border-2 border-[#0F766E] bg-white object-contain"
+                />
+              ) : null}
               <p className="text-[18px] text-[#111827]">
                 {activePreset && editedBytes
                   ? `Preview ready with "${activePreset}" (${editedBytes.length} bytes).`

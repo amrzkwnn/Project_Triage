@@ -96,9 +96,22 @@ export function evaluateScamCheckInput(params: {
   return { ok: true, verdict: checkText(combinedText) };
 }
 
+export function readPreloadedScamText(search?: string): string {
+  const raw =
+    search ?? (typeof window !== 'undefined' ? window.location.search : '');
+  if (!raw || raw.trim().length === 0) return '';
+  try {
+    const params = new URLSearchParams(raw.startsWith('?') ? raw.slice(1) : raw);
+    return params.get('text') ?? '';
+  } catch {
+    return '';
+  }
+}
+
 export type ScamShieldPageProps = {
   initialSettings?: Settings;
   initialText?: string;
+  initialQuery?: string;
   initialScreenshotName?: string;
   initialScreenshotOcrText?: string;
   initialVerdict?: ScamCheckOutput;
@@ -110,7 +123,8 @@ export type ScamShieldPageProps = {
 
 export function ScamShieldPage({
   initialSettings,
-  initialText = '',
+  initialText,
+  initialQuery,
   initialScreenshotName,
   initialScreenshotOcrText = '',
   initialVerdict,
@@ -119,10 +133,15 @@ export function ScamShieldPage({
   vault,
   onNavigate,
 }: ScamShieldPageProps) {
+  const resolvedInitialText =
+    initialText !== undefined
+      ? initialText
+      : readPreloadedScamText(initialQuery);
+
   const [settings, setSettings] = useState<Settings>(
     initialSettings ?? createDefaultSettings()
   );
-  const [messageText, setMessageText] = useState<string>(initialText);
+  const [messageText, setMessageText] = useState<string>(resolvedInitialText);
   const [screenshotName, setScreenshotName] = useState<string | undefined>(
     initialScreenshotName
   );
@@ -131,9 +150,12 @@ export function ScamShieldPage({
   );
   const [verdict, setVerdict] = useState<ScamCheckOutput | undefined>(() => {
     if (initialVerdict) return initialVerdict;
-    if (initialText.trim().length > 0 || initialScreenshotOcrText.trim().length > 0) {
+    if (
+      resolvedInitialText.trim().length > 0 ||
+      initialScreenshotOcrText.trim().length > 0
+    ) {
       const evaluated = evaluateScamCheckInput({
-        messageText: initialText,
+        messageText: resolvedInitialText,
         screenshotName: initialScreenshotName,
         screenshotOcrText: initialScreenshotOcrText,
       });
@@ -174,6 +196,22 @@ export function ScamShieldPage({
       void loadSettings();
     }
   }, [initialSettings, loadSettings]);
+
+  useEffect(() => {
+    if (initialText !== undefined) return;
+    const preloaded = readPreloadedScamText(initialQuery);
+    if (preloaded.length > 0) {
+      setMessageText(preloaded);
+      const evaluated = evaluateScamCheckInput({
+        messageText: preloaded,
+        screenshotName,
+        screenshotOcrText,
+      });
+      if (evaluated.ok) {
+        setVerdict(evaluated.verdict);
+      }
+    }
+  }, [initialText, initialQuery, screenshotName, screenshotOcrText]);
 
   const handleBack = (
     event: React.MouseEvent<HTMLAnchorElement | HTMLButtonElement>

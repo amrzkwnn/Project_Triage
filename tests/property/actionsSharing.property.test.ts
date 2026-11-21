@@ -341,6 +341,37 @@ describe('ActionExecutor confirmation gate and caregiver sharing properties', ()
             expect(totalCalls()).toBe(0);
           }
 
+          // Reusing identical step actionId or identical confirmation token for both steps -> mismatch, 0 calls
+          {
+            const { deps, totalCalls } = makeSpySideEffects();
+            const sameStepIdAction: Action = {
+              actionId,
+              kind: 'eraseAll',
+              step1ActionId,
+              step2ActionId: step1ActionId,
+            };
+            const resSame = await execute(
+              sameStepIdAction,
+              { step1: c1, step2: c1 },
+              deps
+            );
+            expect(resSame.ok).toBe(false);
+            if (!resSame.ok) expect(resSame.error.code).toBe('mismatch');
+            expect(totalCalls()).toBe(0);
+
+            const distinctTokenSameId = confirmFromTap(step1ActionId);
+            const resSameActionId = await execute(
+              sameStepIdAction,
+              { step1: c1, step2: distinctTokenSameId },
+              deps
+            );
+            expect(resSameActionId.ok).toBe(false);
+            if (!resSameActionId.ok) {
+              expect(resSameActionId.error.code).toBe('mismatch');
+            }
+            expect(totalCalls()).toBe(0);
+          }
+
           // Both valid and matching -> succeeds, runEraseAll called once
           {
             const { deps, spies, totalCalls } = makeSpySideEffects();
@@ -507,5 +538,44 @@ describe('ActionExecutor confirmation gate and caregiver sharing properties', ()
       ),
       { numRuns: 100 }
     );
+  });
+
+  it('stripFamilyCodeWord reaches fixed point so nested code words like "rorosese" cannot re-form "rose"', () => {
+    const settings: Settings = {
+      channels: {
+        email: true,
+        whatsappForward: false,
+        smsPaste: false,
+        messengerPaste: false,
+        photos: false,
+      },
+      allowAiReading: false,
+      caregiverShareEnabled: true,
+      pushEnabled: false,
+      reminderLead: '30m',
+      timeFormat: '12h',
+      familyCodeWord: 'rose',
+      checklist: {},
+      familyMembers: [],
+    };
+
+    const payload = buildFamilySharePayload(
+      {
+        id: 'nested-codeword-1',
+        source: 'smsPaste',
+        sender: 'Caller rorosese',
+        text: 'Hello rorosese and rororosesese please check',
+        summary: {
+          fromApp: 'From SMS',
+          whoSent: 'Caller rorosese',
+          actionNeeded: 'Verify rorosese',
+          text: 'Summary with rorosese inside.',
+        },
+      },
+      settings
+    );
+
+    const serialized = JSON.stringify(payload).toLowerCase();
+    expect(serialized).not.toContain('rose');
   });
 });

@@ -501,4 +501,43 @@ describe('Scam Shield property tests', () => {
       { numRuns: 100 }
     );
   });
+
+  it('domainMatchesOrg rejects suspicious lookalike TLDs for known organizations while allowing legitimate TLDs', () => {
+    const lookalikeCases: Array<{ org: string; domain: string }> = [
+      { org: 'Maybank', domain: 'maybank2u.xyz' },
+      { org: 'Maybank', domain: 'maybank.evil' },
+      { org: 'CIMB', domain: 'cimbclicks.top' },
+      { org: 'LHDN', domain: 'lhdn.click' },
+      { org: 'PosLaju', domain: 'poslaju.xyz' },
+      { org: 'TNB', domain: 'tnb.top' },
+      { org: 'KWSP', domain: 'kwsp.click' },
+      { org: 'EPF', domain: 'epf.evil' },
+    ];
+
+    for (const { org, domain } of lookalikeCases) {
+      const verdict = checkText(`Please check https://${domain}/account`, {
+        claimedOrg: org,
+      });
+      expect(verdict.value, `${org} vs ${domain}`).not.toBe('safe');
+      expect(verdict.flags, `${org} vs ${domain}`).toContain('domain-mismatch');
+    }
+
+    const legitimateCases: Array<{ org: string; domain: string }> = [
+      { org: 'Maybank', domain: 'maybank2u.com.my' },
+      { org: 'CIMB', domain: 'cimbclicks.com.my' },
+      { org: 'LHDN', domain: 'hasil.gov.my' },
+      { org: 'PosLaju', domain: 'pos.com.my' },
+      { org: 'TNB', domain: 'mytnb.com.my' },
+      { org: 'KWSP', domain: 'kwsp.gov.my' },
+    ];
+
+    for (const { org, domain } of legitimateCases) {
+      const verdict = checkText(`Visit https://${domain}/info`, {
+        claimedOrg: org,
+      });
+      expect(verdict.flags, `${org} vs ${domain}`).not.toContain(
+        'domain-mismatch'
+      );
+    }
+  });
 });

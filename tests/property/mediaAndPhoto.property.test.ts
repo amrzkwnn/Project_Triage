@@ -407,4 +407,52 @@ describe('Media Provenance Check and Photo Helper property tests', () => {
       { numRuns: 100 }
     );
   });
+
+  it('applyPhotoPreset preserves JPEG and PNG headers/payloads without corruption while producing distinct deterministic outputs', async () => {
+    const validJpeg = buildJpegWithApp1('Exif Apple iPhone');
+    const validPng = buildPngWithChunk('IDAT', 'pixel-payload');
+
+    const jpegOutputs = new Set<string>();
+    for (const preset of PHOTO_PRESETS) {
+      const res = await applyPhotoPreset(validJpeg, preset);
+      expect(res.ok).toBe(true);
+      if (res.ok) {
+        const out = res.value.editedBytes;
+        // Original JPEG header, APP1 segment, and EOI marker are 100% preserved intact
+        expect(Array.from(out.subarray(0, validJpeg.length))).toEqual(
+          Array.from(validJpeg)
+        );
+        expect(out[0]).toBe(0xff);
+        expect(out[1]).toBe(0xd8);
+        jpegOutputs.add(Array.from(out).join(','));
+      }
+    }
+    expect(jpegOutputs.size).toBe(PHOTO_PRESETS.length);
+
+    const pngOutputs = new Set<string>();
+    const iendBytes = [
+      0x00, 0x00, 0x00, 0x00,
+      0x49, 0x45, 0x4e, 0x44,
+      0xae, 0x42, 0x60, 0x82,
+    ];
+    // Give validPng the canonical PNG IEND CRC so isPngWithIend matches
+    const canonicalPng = new Uint8Array(validPng.length);
+    canonicalPng.set(validPng);
+    canonicalPng.set(iendBytes, canonicalPng.length - iendBytes.length);
+
+    for (const preset of PHOTO_PRESETS) {
+      const res = await applyPhotoPreset(canonicalPng, preset);
+      expect(res.ok).toBe(true);
+      if (res.ok) {
+        const out = res.value.editedBytes;
+        // PNG signature and all chunks before IEND are preserved intact, and IEND stays at the end
+        expect(Array.from(out.subarray(0, canonicalPng.length - 12))).toEqual(
+          Array.from(canonicalPng.subarray(0, canonicalPng.length - 12))
+        );
+        expect(Array.from(out.subarray(out.length - 12))).toEqual(iendBytes);
+        pngOutputs.add(Array.from(out).join(','));
+      }
+    }
+    expect(pngOutputs.size).toBe(PHOTO_PRESETS.length);
+  });
 });

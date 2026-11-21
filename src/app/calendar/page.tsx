@@ -8,6 +8,7 @@ import {
   Calendar as CalendarIcon,
   Camera,
   Check,
+  Lock,
   Pencil,
   Plus,
   Receipt,
@@ -15,6 +16,7 @@ import {
   Stethoscope,
   Sun,
   Trash2,
+  Upload,
   Users,
   X,
 } from 'lucide-react';
@@ -47,8 +49,13 @@ import {
   type ReminderLead,
   type Settings,
 } from '@/lib/types';
+import { admit } from '@/lib/vault/consent';
 import type { Vault } from '@/lib/vault/schema';
+import { setChannelToggle } from '@/lib/vault/settings';
 import { createVault } from '@/lib/vault/store';
+
+const ALLOWED_CALENDAR_PHOTO_TYPES = new Set(['image/jpeg', 'image/png']);
+const MAX_CALENDAR_PHOTO_BYTES = 10 * 1024 * 1024;
 
 type CalendarViewMode = 'Today' | 'This Week' | 'Month List';
 
@@ -139,6 +146,7 @@ export type CalendarPageProps = {
   initialToday?: string;
   initialView?: CalendarViewMode;
   initialSnapCandidates?: Candidate[];
+  extractCalendarPhotoText?: (file: File) => Promise<string>;
   vault?: Vault;
   onNavigate?: (href: string) => void;
 };
@@ -149,6 +157,7 @@ export function CalendarPage({
   initialToday,
   initialView = 'Today',
   initialSnapCandidates = [],
+  extractCalendarPhotoText,
   vault,
   onNavigate,
 }: CalendarPageProps) {
@@ -183,6 +192,9 @@ export function CalendarPage({
   >(undefined);
 
   // Paper Calendar Snap 1-by-1 candidate review state
+  const [snapPhotoName, setSnapPhotoName] = useState<string | undefined>(
+    undefined
+  );
   const [snapInputText, setSnapInputText] = useState<string>('');
   const [snapError, setSnapError] = useState<string | undefined>(undefined);
   const [snapQueue, setSnapQueue] = useState<Candidate[]>(
@@ -405,8 +417,101 @@ export function CalendarPage({
     setStatusMessage(`Reminder lead time set to ${LEAD_LABELS[lead]}.`);
   };
 
+  const photosGate = admit(settings, { source: 'photos' });
+  const photosAllowed = photosGate.admit;
+
+  const handleTurnOnPhotos = async () => {
+    setSnapError(undefined);
+    if (!resolvedVault) {
+      setSettings((prev) => ({
+        ...prev,
+        channels: { ...prev.channels, photos: true },
+      }));
+      setStatusMessage(
+        'Photo access is now ON. You can snap a paper calendar photo now.'
+      );
+      return;
+    }
+
+    const res = await setChannelToggle(resolvedVault, settings, 'photos', true);
+    if (!res.ok) {
+      setSnapError(res.error.message);
+      setStatusMessage(res.error.message);
+      return;
+    }
+
+    setSettings(res.settings);
+    setStatusMessage(
+      'Photo access is now ON. You can snap a paper calendar photo now.'
+    );
+  };
+
+  const handleSnapPhotoPick = async (
+    event: React.ChangeEvent<HTMLInputElement>
+  ) => {
+    setSnapError(undefined);
+    const gate = admit(settings, { source: 'photos' });
+    if (!gate.admit) {
+      setSnapError(gate.message);
+      setStatusMessage(gate.message);
+      return;
+    }
+
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    if (
+      !ALLOWED_CALENDAR_PHOTO_TYPES.has(file.type) ||
+      file.size === 0 ||
+      file.size > MAX_CALENDAR_PHOTO_BYTES
+    ) {
+      const msg =
+        'Please choose a clear JPEG or PNG photo up to 10 MB of your paper calendar.';
+      setSnapError(msg);
+      setStatusMessage(msg);
+      return;
+    }
+
+    setSnapPhotoName(file.name);
+
+    if (extractCalendarPhotoText) {
+      try {
+        const extractedText = await extractCalendarPhotoText(file);
+        setSnapInputText(extractedText);
+        const extracted = extractCalendarCandidatesFromText(extractedText, 0.85);
+        if (!extracted.ok) {
+          setSnapError(extracted.error.message);
+          setStatusMessage(extracted.error.message);
+          return;
+        }
+        setSnapQueue(extracted.value);
+        setConfirmDateInput(extracted.value[0]?.date ?? '');
+        setStatusMessage(
+          `Found ${extracted.value.length} calendar item(s) from "${file.name}" to review one by one.`
+        );
+        return;
+      } catch {
+        const msg =
+          'We could not read that calendar photo. Please try a clearer photo or type the lines below.';
+        setSnapError(msg);
+        setStatusMessage(msg);
+        return;
+      }
+    }
+
+    setStatusMessage(
+      `Photo "${file.name}" selected. Paste or review the dates below, then tap Review Paper Calendar Items.`
+    );
+  };
+
   const handleParseSnapText = () => {
     setSnapError(undefined);
+    const gate = admit(settings, { source: 'photos' });
+    if (!gate.admit) {
+      setSnapError(gate.message);
+      setStatusMessage(gate.message);
+      return;
+    }
     const extracted = extractCalendarCandidatesFromText(snapInputText, 0.85);
     if (!extracted.ok) {
       setSnapError(extracted.error.message);
@@ -838,7 +943,53 @@ export function CalendarPage({
           <span>Paper Calendar Snap</span>
         </h2>
 
-        {currentCandidate ? (
+        {!photosAllowed ? (
+          <div
+            role="region"
+            aria-label="Photos channel is off"
+            className="rounded-xl border-2 border-[#D97706] bg-[#FFFBEB] p-4 space-y-4"
+          >
+            <span
+              data-badge="true"
+              className="inline-flex items-center gap-2 rounded-lg border-2 border-[#D97706] bg-white px-3 py-1.5 text-[18px] font-bold text-[#92400E]"
+            >
+              <span aria-hidden="true" className="inline-flex shrink-0">
+                <Lock size={20} />
+              </span>
+              <span>Photo Access is OFF</span>
+            </span>
+            <p className="text-[18px] font-semibold text-[#111827]">
+              {photosGate.message}
+            </p>
+            <p className="text-[18px] text-[#111827]">
+              Turn on the Photos channel to snap a paper calendar photo and
+              review appointments one by one.
+            </p>
+            <div className="flex flex-wrap gap-3">
+              <SeniorButton
+                variant="primary"
+                icon={<Camera size={20} />}
+                onClick={() => void handleTurnOnPhotos()}
+              >
+                Turn On Photos
+              </SeniorButton>
+              <SeniorButton
+                variant="secondary"
+                href="/my-data"
+                onClick={
+                  onNavigate
+                    ? (e) => {
+                        e.preventDefault();
+                        onNavigate('/my-data');
+                      }
+                    : undefined
+                }
+              >
+                Open My Data
+              </SeniorButton>
+            </div>
+          </div>
+        ) : currentCandidate ? (
           <div className="rounded-xl border-2 border-[#0F766E] bg-[#F0FDFA] p-4 space-y-4">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <p className="text-[18px] font-bold text-[#115E59]">
@@ -930,33 +1081,62 @@ export function CalendarPage({
             </div>
           </div>
         ) : (
-          <div className="space-y-3">
-            <label
-              htmlFor="snap-text-input"
-              className="block text-[18px] font-semibold text-[#111827]"
-            >
-              Paste lines from your paper wall calendar (YYYY-MM-DD Title)
-            </label>
-            <textarea
-              id="snap-text-input"
-              rows={3}
-              value={snapInputText}
-              onChange={(e) => setSnapInputText(e.target.value)}
-              placeholder="2026-07-18 10:00 Dentist Visit"
-              className="w-full rounded-xl border-2 border-[#111827] bg-[#FAF9F6] p-4 text-[18px] text-[#111827]"
-            />
-            {snapError ? (
-              <p role="alert" className="text-[18px] font-semibold text-[#881337]">
-                {snapError}
-              </p>
-            ) : null}
-            <SeniorButton
-              variant="primary"
-              icon={<Camera size={20} />}
-              onClick={handleParseSnapText}
-            >
-              Review Paper Calendar Items
-            </SeniorButton>
+          <div className="space-y-4">
+            <div className="space-y-2">
+              <label
+                htmlFor="calendar-snap-photo-input"
+                className="inline-flex min-h-[56px] cursor-pointer items-center gap-3 rounded-xl border-2 border-[#0F766E] bg-[#F0FDFA] px-5 py-3 text-[18px] font-semibold text-[#115E59]"
+              >
+                <span aria-hidden="true" className="inline-flex shrink-0">
+                  <Upload size={22} />
+                </span>
+                <span>Snap Paper Calendar Photo</span>
+              </label>
+              <input
+                id="calendar-snap-photo-input"
+                type="file"
+                accept="image/jpeg,image/png"
+                onChange={(e) => void handleSnapPhotoPick(e)}
+                className="sr-only"
+              />
+              {snapPhotoName ? (
+                <p className="text-[18px] font-semibold text-[#115E59]">
+                  Selected calendar photo: {snapPhotoName}
+                </p>
+              ) : null}
+            </div>
+
+            <div className="space-y-3">
+              <label
+                htmlFor="snap-text-input"
+                className="block text-[18px] font-semibold text-[#111827]"
+              >
+                Paste lines from your paper wall calendar (YYYY-MM-DD Title)
+              </label>
+              <textarea
+                id="snap-text-input"
+                rows={3}
+                value={snapInputText}
+                onChange={(e) => setSnapInputText(e.target.value)}
+                placeholder="2026-07-18 10:00 Dentist Visit"
+                className="w-full rounded-xl border-2 border-[#111827] bg-[#FAF9F6] p-4 text-[18px] text-[#111827]"
+              />
+              {snapError ? (
+                <p
+                  role="alert"
+                  className="text-[18px] font-semibold text-[#881337]"
+                >
+                  {snapError}
+                </p>
+              ) : null}
+              <SeniorButton
+                variant="primary"
+                icon={<Camera size={20} />}
+                onClick={handleParseSnapText}
+              >
+                Review Paper Calendar Items
+              </SeniorButton>
+            </div>
           </div>
         )}
       </section>

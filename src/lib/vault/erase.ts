@@ -65,6 +65,10 @@ export async function eraseAllDataAndTokens(
         failedAccounts.push(rec.account);
       }
     }
+  } else if (tokens.length > 0) {
+    for (const rec of tokens) {
+      failedAccounts.push(rec.account);
+    }
   }
 
   // Always erase all local Vault data and local OAuth tokens even if revocations fail

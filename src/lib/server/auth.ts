@@ -50,12 +50,35 @@ export function extractRawToken(req: Request): string | null {
   return null;
 }
 
+export type TokenRegistryOptions = {
+  includeDefaultDevToken?: boolean;
+  env?: Record<string, string | undefined>;
+};
+
+function getProcessEnv(): Record<string, string | undefined> {
+  const g = globalThis as {
+    process?: { env?: Record<string, string | undefined> };
+  };
+  return g.process?.env ?? {};
+}
+
 export class TokenRegistry {
   private readonly tokens = new Map<string, string>();
 
-  constructor(opts?: { includeDefaultDevToken?: boolean }) {
-    if (opts?.includeDefaultDevToken !== false) {
+  constructor(opts?: TokenRegistryOptions) {
+    const env = opts?.env ?? getProcessEnv();
+    const shouldIncludeDefaultDevToken =
+      opts?.includeDefaultDevToken ?? env.NODE_ENV !== 'production';
+
+    if (shouldIncludeDefaultDevToken) {
       this.registerToken(DEFAULT_DEV_TOKEN, DEFAULT_DEV_SENIOR_ID);
+    }
+
+    const envToken = env.INGEST_API_TOKEN?.trim();
+    if (envToken && envToken.length > 0) {
+      const envSeniorId =
+        env.INGEST_SENIOR_ID?.trim() || DEFAULT_DEV_SENIOR_ID;
+      this.registerToken(envToken, envSeniorId);
     }
   }
 
@@ -96,8 +119,8 @@ export class TokenRegistry {
   }
 }
 
-export function createTokenRegistry(opts?: {
-  includeDefaultDevToken?: boolean;
-}): TokenRegistry {
+export function createTokenRegistry(
+  opts?: TokenRegistryOptions
+): TokenRegistry {
   return new TokenRegistry(opts);
 }

@@ -565,4 +565,44 @@ describe('Vault storage, export/import, atomicity, collision, and erase properti
       { numRuns: 100 }
     );
   });
+
+  it('eraseAllDataAndTokens marks existing OAuth accounts as failedAccounts when revokeToken handler is omitted while still erasing local Vault data', async () => {
+    const vault = createVault({ dbName: nextDbName('p40_no_revoker') });
+    await vault.saveSettings({
+      ...createDefaultSettings(),
+      channels: { ...createDefaultSettings().channels, email: true },
+    });
+    await vault.saveOAuthToken({
+      id: 'tok-1',
+      account: 'senior1@example.com',
+      provider: 'Google',
+      token: 'oauth-token-1',
+    });
+    await vault.saveOAuthToken({
+      id: 'tok-2',
+      account: 'senior2@example.com',
+      provider: 'Microsoft',
+      token: 'oauth-token-2',
+    });
+
+    const res = await eraseAllDataAndTokens(vault);
+    expect(res.ok).toBe(true);
+    if (res.ok) {
+      expect(res.value.allRevoked).toBe(false);
+      expect(res.value.failedAccounts).toEqual([
+        'senior1@example.com',
+        'senior2@example.com',
+      ]);
+      expect(res.value.instructions).toContain('senior1@example.com');
+      expect(res.value.instructions).toContain('senior2@example.com');
+    }
+
+    // Local Vault data and local tokens are still completely wiped
+    const tokensAfter = await vault.listOAuthTokens();
+    const settingsAfter = await vault.getSettings();
+    expect(tokensAfter.ok && tokensAfter.value).toEqual([]);
+    expect(settingsAfter.ok && settingsAfter.value).toEqual(
+      createDefaultSettings()
+    );
+  });
 });
