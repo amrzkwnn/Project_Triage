@@ -1,5 +1,26 @@
-import { describe, expect, it } from 'vitest';
-import type { PreviewServer, ViteDevServer } from 'vite';
+import { describe, expect, it, vi } from 'vitest';
+import type { PreviewServer, ResolvedConfig, ViteDevServer } from 'vite';
+
+const mockLoadEnv = vi.fn<
+  (mode: string, envDir: string, prefixes?: string | string[]) => Record<string, string>
+>(() => ({}));
+
+vi.mock('vite', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('vite')>();
+  return {
+    ...actual,
+    loadEnv: (mode: string, envDir: string, prefixes?: string | string[]) =>
+      mockLoadEnv(mode, envDir, prefixes),
+  };
+});
+
+function getProcessEnv(): Record<string, string | undefined> {
+  return (
+    globalThis as unknown as {
+      process?: { env?: Record<string, string | undefined> };
+    }
+  ).process?.env ?? {};
+}
 import { TokenRegistry } from '@/lib/server/auth';
 import { createRateLimiter } from '@/lib/server/rateLimit';
 import { EncryptedRelayStore } from '@/lib/server/relay';
@@ -353,5 +374,181 @@ describe('Task 2: Vite API Middleware Dispatcher (/api/*)', () => {
     });
     expect(ackRes.calledNext).toBe(false);
     expect(ackRes.statusCode).toBe(204);
+  });
+
+  it('forwards rt.env to createDecidePostHandler and invokes rt.aiProvider with GEMINI_API_KEY on POST /api/decide', async () => {
+    const receivedCalls: Array<{
+      item: { channel: string; text: string };
+      apiKey: string;
+    }> = [];
+    const rt: ServerRuntime = {
+      ...createTestRuntime(),
+      env: { GEMINI_API_KEY: 'live-test-key' },
+      aiProvider: async (item, apiKey) => {
+        receivedCalls.push({ item, apiKey });
+        return {
+          summary: {
+            fromApp: 'Email',
+            whoSent: 'Neighborhood Pharmacy',
+            actionNeeded: 'Pick up prescription before 5 PM',
+            text: 'Your prescription is ready for pickup at Neighborhood Pharmacy today.',
+          },
+          group: 'Personal',
+          priority: 'Important',
+          confidence: 0.96,
+        };
+      },
+    };
+
+    const res = await dispatchApiRequest(
+      new Request('http://localhost:5173/api/decide', {
+        method: 'POST',
+        headers: {
+          Authorization: 'Bearer dev-senior-token-1',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          item: {
+            channel: 'email',
+            text: 'Your prescription is ready at Neighborhood Pharmacy.',
+          },
+        }),
+      }),
+      rt
+    );
+
+    expect(res).not.toBeNull();
+    expect(res!.status).toBe(200);
+    expect(receivedCalls).toHaveLength(1);
+    expect(receivedCalls[0].apiKey).toBe('live-test-key');
+    expect(receivedCalls[0].item.channel).toBe('email');
+
+    const bodyText = await res!.text();
+    expect(bodyText).not.toContain('live-test-key');
+    const parsed = JSON.parse(bodyText) as {
+      summary: { whoSent: string; actionNeeded: string };
+      group: string;
+      priority: string;
+      confidence: number;
+    };
+    expect(parsed.summary.whoSent).toBe('Neighborhood Pharmacy');
+    expect(parsed.summary.actionNeeded).toBe('Pick up prescription before 5 PM');
+    expect(parsed.group).toBe('Personal');
+    expect(parsed.priority).toBe('Important');
+    expect(parsed.confidence).toBe(0.96);
+  });
+
+  it('seniorCompanionApiPlugin loads .env.local via configResolved and passes GEMINI_API_KEY server-side to /api/decide', async () => {
+    const env = getProcessEnv();
+    const origGeminiKey = env.GEMINI_API_KEY;
+    const origAiKey = env.AI_API_KEY;
+    delete env.GEMINI_API_KEY;
+    delete env.AI_API_KEY;
+
+    mockLoadEnv.mockReset();
+    mockLoadEnv.mockReturnValue({
+      GEMINI_API_KEY: 'dotenv-local-secret-key',
+    });
+
+    try {
+      let receivedKey = '';
+      const rt: ServerRuntime = {
+        ...createTestRuntime(),
+        aiProvider: async (_item, apiKey) => {
+          receivedKey = apiKey;
+          return {
+            summary: {
+              fromApp: 'Email',
+              whoSent: 'Family Doctor',
+              actionNeeded: 'Bring medication list',
+              text: 'Your doctor asked you to bring your medication list tomorrow.',
+            },
+            group: 'Personal',
+            priority: 'Important',
+            confidence: 0.91,
+          };
+        },
+      };
+
+      const plugin = seniorCompanionApiPlugin(rt);
+      if (typeof plugin.configResolved === 'function') {
+        plugin.configResolved({
+          mode: 'development',
+          root: '/fake/project-root',
+          envDir: '/fake/env-dir',
+        } as unknown as ResolvedConfig);
+      }
+
+      expect(mockLoadEnv).toHaveBeenCalledWith(
+        'development',
+        '/fake/env-dir',
+        ''
+      );
+
+      const devMiddlewares: MockMiddleware[] = [];
+      if (typeof plugin.configureServer === 'function') {
+        plugin.configureServer({
+          middlewares: {
+            use: (mw: MockMiddleware) => {
+              devMiddlewares.push(mw);
+            },
+          },
+        } as unknown as ViteDevServer);
+      }
+
+      const res = await runMiddleware(devMiddlewares[0], {
+        url: '/api/decide',
+        method: 'POST',
+        headers: {
+          host: 'localhost:5173',
+          authorization: 'Bearer dev-senior-token-1',
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          item: {
+            channel: 'email',
+            text: 'Please bring your medication list tomorrow.',
+          },
+        }),
+      });
+
+      expect(res.statusCode).toBe(200);
+      expect(receivedKey).toBe('dotenv-local-secret-key');
+      expect(res.body).not.toContain('dotenv-local-secret-key');
+
+      // Shell process.env takes precedence over .env.local
+      env.GEMINI_API_KEY = 'shell-override-key';
+      const res2 = await runMiddleware(devMiddlewares[0], {
+        url: '/api/decide',
+        method: 'POST',
+        headers: {
+          host: 'localhost:5173',
+          authorization: 'Bearer dev-senior-token-1',
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          item: {
+            channel: 'email',
+            text: 'Please bring your medication list tomorrow.',
+          },
+        }),
+      });
+
+      expect(res2.statusCode).toBe(200);
+      expect(receivedKey).toBe('shell-override-key');
+      expect(res2.body).not.toContain('shell-override-key');
+    } finally {
+      if (origGeminiKey === undefined) {
+        delete env.GEMINI_API_KEY;
+      } else {
+        env.GEMINI_API_KEY = origGeminiKey;
+      }
+      if (origAiKey === undefined) {
+        delete env.AI_API_KEY;
+      } else {
+        env.AI_API_KEY = origAiKey;
+      }
+      mockLoadEnv.mockReset();
+    }
   });
 });

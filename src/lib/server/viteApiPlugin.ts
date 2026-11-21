@@ -1,6 +1,13 @@
-import type { Connect, Plugin, PreviewServer, ViteDevServer } from 'vite';
+import {
+  loadEnv,
+  type Connect,
+  type Plugin,
+  type PreviewServer,
+  type ViteDevServer,
+} from 'vite';
 import type { ServerRuntime } from '@/lib/server/runtime';
 
+type EnvMap = Record<string, string | undefined>;
 type RawHeaderMap = Record<string, string | readonly string[] | undefined>;
 
 type MiddlewareRequest = {
@@ -20,12 +27,14 @@ type MiddlewareResponse = {
 
 type ApiDispatcher = (
   req: Request,
-  runtime?: ServerRuntime
+  runtime?: ServerRuntime,
+  envOverride?: EnvMap
 ) => Promise<Response | null>;
 
 type ServerDeps = {
   handlers: typeof import('@/lib/server/handlers');
   runtime: typeof import('@/lib/server/runtime');
+  geminiProvider: typeof import('@/lib/server/geminiProvider');
 };
 
 const textEncoder = new TextEncoder();
@@ -37,7 +46,12 @@ function loadServerDeps(): Promise<ServerDeps> {
     cachedServerDeps = Promise.all([
       import('@/lib/server/handlers'),
       import('@/lib/server/runtime'),
-    ]).then(([handlers, runtime]) => ({ handlers, runtime }));
+      import('@/lib/server/geminiProvider'),
+    ]).then(([handlers, runtime, geminiProvider]) => ({
+      handlers,
+      runtime,
+      geminiProvider,
+    }));
   }
   return cachedServerDeps;
 }
@@ -59,7 +73,8 @@ function methodNotAllowedResponse(allowedMethod: 'GET' | 'POST'): Response {
 
 export async function dispatchApiRequest(
   req: Request,
-  runtime?: ServerRuntime
+  runtime?: ServerRuntime,
+  envOverride?: EnvMap
 ): Promise<Response | null> {
   const { pathname } = new URL(req.url);
   const method = req.method.toUpperCase();
@@ -84,7 +99,8 @@ export async function dispatchApiRequest(
       return null;
   }
 
-  const { handlers, runtime: runtimeMod } = await loadServerDeps();
+  const { handlers, runtime: runtimeMod, geminiProvider } =
+    await loadServerDeps();
   const rt = runtime ?? runtimeMod.getServerRuntime();
 
   switch (pathname) {
@@ -96,14 +112,22 @@ export async function dispatchApiRequest(
       return handlers.createIngestPullGetHandler(rt)(req);
     case '/api/ingest/ack':
       return handlers.createIngestAckPostHandler(rt)(req);
-    case '/api/decide':
+    case '/api/decide': {
+      const effectiveEnv = envOverride ?? rt.env;
+      const modelOverride = effectiveEnv?.GEMINI_MODEL?.trim();
+      const aiProvider =
+        modelOverride && geminiProvider.isDefaultGeminiAiProvider(rt.aiProvider)
+          ? geminiProvider.createGeminiAiProvider({ model: modelOverride })
+          : rt.aiProvider;
       return handlers.createDecidePostHandler({
         tokenRegistry: rt.tokenRegistry,
         rateLimiter: rt.rateLimiter,
         logger: rt.logger,
         now: rt.now,
-        aiProvider: rt.aiProvider,
+        aiProvider,
+        env: effectiveEnv,
       })(req);
+    }
     default:
       return null;
   }
@@ -155,7 +179,8 @@ function toWebHeaders(rawHeaders: RawHeaderMap): Headers {
 
 function createApiMiddleware(
   resolveDispatcher: () => Promise<ApiDispatcher>,
-  runtime?: ServerRuntime
+  runtime?: ServerRuntime,
+  resolveEnv?: () => EnvMap | undefined
 ): Connect.NextHandleFunction {
   return (rawReq, rawRes, next) => {
     const req = rawReq as unknown as MiddlewareRequest;
@@ -193,7 +218,7 @@ function createApiMiddleware(
       }
 
       const dispatch = await resolveDispatcher();
-      const response = await dispatch(webReq, runtime);
+      const response = await dispatch(webReq, runtime, resolveEnv?.());
       if (response === null) {
         next();
         return;
@@ -267,17 +292,47 @@ function createPreviewDispatcherLoader(
   };
 }
 
+function getProcessEnv(): EnvMap {
+  const g = globalThis as {
+    process?: { env?: EnvMap };
+  };
+  return g.process?.env ?? {};
+}
+
 export function seniorCompanionApiPlugin(runtime?: ServerRuntime): Plugin {
+  let loadedEnv: EnvMap = {};
+
+  const resolveEnv = (): EnvMap | undefined => {
+    if (runtime?.env !== undefined) {
+      return runtime.env;
+    }
+    return {
+      ...loadedEnv,
+      ...getProcessEnv(),
+    };
+  };
+
   return {
     name: 'senior-companion-api',
+    configResolved(config) {
+      loadedEnv = loadEnv(config.mode, config.envDir || config.root, '');
+    },
     configureServer(server) {
       server.middlewares.use(
-        createApiMiddleware(createDevDispatcherLoader(server), runtime)
+        createApiMiddleware(
+          createDevDispatcherLoader(server),
+          runtime,
+          resolveEnv
+        )
       );
     },
     configurePreviewServer(server) {
       server.middlewares.use(
-        createApiMiddleware(createPreviewDispatcherLoader(server), runtime)
+        createApiMiddleware(
+          createPreviewDispatcherLoader(server),
+          runtime,
+          resolveEnv
+        )
       );
     },
   };

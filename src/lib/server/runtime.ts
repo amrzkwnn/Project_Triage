@@ -1,4 +1,5 @@
 import { TokenRegistry } from '@/lib/server/auth';
+import { createGeminiAiProvider } from '@/lib/server/geminiProvider';
 import { createRateLimiter, type RateLimiter } from '@/lib/server/rateLimit';
 import { EncryptedRelayStore } from '@/lib/server/relay';
 import { createSafeLogger, type SafeLogger } from '@/lib/server/safeLog';
@@ -11,6 +12,7 @@ export type ServerRuntime = {
   logger: SafeLogger;
   now: () => number;
   aiProvider?: DecideAiProvider;
+  env?: Record<string, string | undefined>;
 };
 
 function createDefaultRuntime(): ServerRuntime {
@@ -20,6 +22,7 @@ function createDefaultRuntime(): ServerRuntime {
     relay: new EncryptedRelayStore(),
     logger: createSafeLogger(),
     now: () => Date.now(),
+    aiProvider: createGeminiAiProvider(),
   };
 }
 
