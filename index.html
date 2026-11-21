@@ -6,6 +6,24 @@
     <meta name="theme-color" content="#0F766E" />
     <link rel="manifest" href="/manifest.webmanifest" />
     <title>My Daily Helper</title>
+    <script>
+      if ('caches' in window) {
+        window.caches.keys().then(function (keys) {
+          keys.forEach(function (k) {
+            if (k !== 'daily-helper-shell-v3') {
+              window.caches.delete(k);
+            }
+          });
+        });
+      }
+      if ('serviceWorker' in navigator) {
+        navigator.serviceWorker.getRegistrations().then(function (regs) {
+          regs.forEach(function (reg) {
+            reg.update();
+          });
+        });
+      }
+    </script>
   </head>
   <body>
     <div id="root"></div>

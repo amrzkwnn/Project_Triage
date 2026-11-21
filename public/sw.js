@@ -1,4 +1,4 @@
-const SHELL_VERSION = 'daily-helper-shell-v1';
+const SHELL_VERSION = 'daily-helper-shell-v3';
 const SHELL_URLS = [
   '/',
   '/my-data',
@@ -81,23 +81,23 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
+  // Network-first with offline cache fallback so live updates are never stuck behind stale cache
   event.respondWith(
-    caches.match(request).then((matched) => {
-      if (matched) {
-        return matched;
-      }
-      return fetch(request)
-        .then((response) => {
-          if (response && response.ok && response.type === 'basic') {
-            const copy = response.clone();
-            caches
-              .open(SHELL_VERSION)
-              .then((store) => store.put(request, copy))
-              .catch(() => undefined);
-          }
-          return response;
-        })
-        .catch(() => makeOfflineResponse('Offline'));
-    })
+    fetch(request)
+      .then((response) => {
+        if (response && response.ok && response.type === 'basic') {
+          const copy = response.clone();
+          caches
+            .open(SHELL_VERSION)
+            .then((store) => store.put(request, copy))
+            .catch(() => undefined);
+        }
+        return response;
+      })
+      .catch(() =>
+        caches
+          .match(request)
+          .then((matched) => matched || makeOfflineResponse('Offline'))
+      )
   );
 });

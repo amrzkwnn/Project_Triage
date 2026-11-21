@@ -73,10 +73,26 @@ export function AppShell({
     window.addEventListener('offline', handleOffline);
     window.addEventListener('online', handleOnline);
 
+    if ('caches' in window) {
+      window.caches
+        .keys()
+        .then((keys) =>
+          Promise.all(
+            keys
+              .filter((k) => k !== 'daily-helper-shell-v3')
+              .map((k) => window.caches.delete(k))
+          )
+        )
+        .catch(() => undefined);
+    }
+
     if ('serviceWorker' in navigator) {
-      navigator.serviceWorker.register('/sw.js').catch(() => {
-        // Offline helper registration is optional when unavailable
-      });
+      navigator.serviceWorker
+        .register('/sw.js')
+        .then((reg) => reg.update())
+        .catch(() => {
+          // Offline helper registration is optional when unavailable
+        });
     }
 
     return () => {
