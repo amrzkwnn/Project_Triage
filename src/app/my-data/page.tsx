@@ -1,13 +1,12 @@
 'use client';
 
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React from 'react';
 import {
   AlertTriangle,
   Check,
   Download,
   Mail,
   RefreshCw,
-  Send,
   Shield,
   Sparkles,
   Trash2,
@@ -19,10 +18,8 @@ import { SeniorButton } from '@/components/SeniorButton';
 import { StatusLive } from '@/components/StatusLive';
 import {
   buildCloudLoginRedirectUrl,
-  connectReadOnlyEmailAccount,
+  completeCloudLoginCallback,
   parseCloudLoginCallback,
-  sendSampleEmailToRelay,
-  syncEmailsFromRelay,
   type EmailProvider,
 } from '@/lib/inbox/emailClient';
 import {
@@ -84,45 +81,42 @@ export function MyDataPage({
   onNavigate,
   onSettingsChange,
 }: MyDataPageProps) {
-  const [settings, setSettings] = useState<Settings>(
+  const [settings, setSettings] = React.useState<Settings>(
     initialSettings ?? createDefaultSettings()
   );
-  const [aiState, setAiState] = useState<AiToggleMachineState>(() => ({
+  const [aiState, setAiState] = React.useState<AiToggleMachineState>(() => ({
     ...createAiToggleState(initialSettings?.allowAiReading ?? false),
     awaitingConfirm: initialAiConfirmOpen,
   }));
-  const [auditEntries, setAuditEntries] = useState<AuditEntry[]>(
+  const [auditEntries, setAuditEntries] = React.useState<AuditEntry[]>(
     initialAudit ?? []
   );
-  const [toggleError, setToggleError] = useState<string | undefined>(
+  const [toggleError, setToggleError] = React.useState<string | undefined>(
     initialToggleError
   );
-  const [exportError, setExportError] = useState<string | undefined>(
+  const [exportError, setExportError] = React.useState<string | undefined>(
     initialExportError
   );
-  const [eraseStep, setEraseStep] = useState<0 | 1 | 2>(initialEraseStep);
-  const [eraseResultMessage, setEraseResultMessage] = useState<
+  const [eraseStep, setEraseStep] = React.useState<0 | 1 | 2>(initialEraseStep);
+  const [eraseResultMessage, setEraseResultMessage] = React.useState<
     string | undefined
   >(undefined);
-  const [eraseInstructions, setEraseInstructions] = useState<
+  const [eraseInstructions, setEraseInstructions] = React.useState<
     string | undefined
   >(undefined);
-  const [statusMessage, setStatusMessage] = useState<string>('');
-  const [emailInput, setEmailInput] = useState<string>('');
-  const [emailProvider, setEmailProvider] = useState<EmailProvider>('Gmail');
-  const [connectedAccount, setConnectedAccount] = useState<
+  const [statusMessage, setStatusMessage] = React.useState<string>('');
+  const [connectedAccount, setConnectedAccount] = React.useState<
     OAuthTokenRecord | undefined
   >(undefined);
-  const [emailNotice, setEmailNotice] = useState<string | undefined>(undefined);
-  const [emailError, setEmailError] = useState<string | undefined>(undefined);
-  const [isSendingTestEmail, setIsSendingTestEmail] = useState<boolean>(false);
+  const [emailNotice, setEmailNotice] = React.useState<string | undefined>(undefined);
+  const [emailError, setEmailError] = React.useState<string | undefined>(undefined);
 
-  const resolvedVault = useMemo(
+  const resolvedVault = React.useMemo(
     () => vault ?? (typeof window !== 'undefined' ? createVault() : undefined),
     [vault]
   );
 
-  const loadData = useCallback(async () => {
+  const loadData = React.useCallback(async () => {
     if (!resolvedVault) return;
     const [settingsRes, auditRes, tokensRes] = await Promise.all([
       resolvedVault.getSettings(),
@@ -143,45 +137,63 @@ export function MyDataPage({
     }
   }, [resolvedVault]);
 
-  useEffect(() => {
+  React.useEffect(() => {
     if (initialSettings === undefined || initialAudit === undefined) {
       void loadData();
     }
   }, [initialSettings, initialAudit, loadData]);
 
-  useEffect(() => {
-    if (typeof window === 'undefined' || !window.location?.search) {
+  React.useEffect(() => {
+    if (typeof window === 'undefined' || !window.location) {
       return;
     }
-    const callbackData = parseCloudLoginCallback(window.location.search);
-    if (!callbackData) {
+    const search = window.location.search ?? '';
+    const hash = window.location.hash ?? '';
+    if (!parseCloudLoginCallback(search, hash)) {
       return;
     }
-    setEmailInput(callbackData.emailAddress);
-    setEmailProvider(callbackData.provider);
-    void connectReadOnlyEmailAccount({
-      vault: resolvedVault,
-      settings,
-      emailAddress: callbackData.emailAddress,
-      provider: callbackData.provider,
-    }).then((res) => {
-      if (res.ok) {
-        setConnectedAccount(res.record);
-        setSettings(res.settings);
-        onSettingsChange?.(res.settings);
-        setEmailNotice(res.message);
-        setStatusMessage(res.message);
+    let cancelled = false;
+    void (async () => {
+      let latestSettings = settings;
+      if (resolvedVault) {
+        const settingsRes = await resolvedVault.getSettings();
+        if (settingsRes.ok) {
+          latestSettings = settingsRes.value;
+        }
       }
-      try {
-        window.history.replaceState(null, '', window.location.pathname);
-      } catch {
-        // ignore history error
+      const res = await completeCloudLoginCallback({
+        vault: resolvedVault,
+        settings: latestSettings,
+        search,
+        hash,
+      });
+      if (!cancelled) {
+        if (res.ok) {
+          setConnectedAccount(res.record);
+          setSettings(res.settings);
+          onSettingsChange?.(res.settings);
+          setEmailError(undefined);
+          setEmailNotice(res.message);
+          setStatusMessage(res.message);
+        } else {
+          setEmailNotice(undefined);
+          setEmailError(res.errorMessage);
+          setStatusMessage(res.errorMessage);
+        }
+        try {
+          window.history.replaceState(null, '', window.location.pathname);
+        } catch {
+          // ignore history error
+        }
       }
-    });
+    })();
+    return () => {
+      cancelled = true;
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const orderedAudit = useMemo(
+  const orderedAudit = React.useMemo(
     () => listAuditNewestFirst(auditEntries),
     [auditEntries]
   );
@@ -232,34 +244,10 @@ export function MyDataPage({
     );
   };
 
-  const handleConnectEmail = async () => {
+  const handleCloudSignIn = (provider: EmailProvider) => {
     setEmailError(undefined);
     setEmailNotice(undefined);
-    const res = await connectReadOnlyEmailAccount({
-      vault: resolvedVault,
-      settings,
-      emailAddress: emailInput,
-      provider: emailProvider,
-    });
-    if (!res.ok) {
-      setEmailError(res.errorMessage);
-      setStatusMessage(res.errorMessage);
-      return;
-    }
-    setConnectedAccount(res.record);
-    setSettings(res.settings);
-    onSettingsChange?.(res.settings);
-    setEmailNotice(res.message);
-    setStatusMessage(res.message);
-  };
-
-  const handleCloudLoginRedirect = () => {
-    setEmailError(undefined);
-    setEmailNotice(undefined);
-    const built = buildCloudLoginRedirectUrl({
-      provider: emailProvider,
-      emailAddress: emailInput,
-    });
+    const built = buildCloudLoginRedirectUrl({ provider });
     if (!built.ok) {
       setEmailError(built.errorMessage);
       setStatusMessage(built.errorMessage);
@@ -267,44 +255,6 @@ export function MyDataPage({
     }
     if (typeof window !== 'undefined') {
       window.location.assign(built.url);
-    }
-  };
-
-  const handleSendTestEmail = async () => {
-    setEmailError(undefined);
-    setEmailNotice(undefined);
-    setIsSendingTestEmail(true);
-    try {
-      const sendRes = await sendSampleEmailToRelay();
-      if (!sendRes.ok) {
-        setEmailError(sendRes.errorMessage);
-        setStatusMessage(sendRes.errorMessage);
-        return;
-      }
-
-      if (settings.channels.email && resolvedVault) {
-        const pullRes = await syncEmailsFromRelay({
-          vault: resolvedVault,
-          settings,
-        });
-        if (pullRes.ok) {
-          const msg =
-            pullRes.stored.length > 0
-              ? 'Test clinic email sent and added to your Unified Inbox.'
-              : 'Test clinic email sent and checked in your Unified Inbox.';
-          setEmailNotice(msg);
-          setStatusMessage(msg);
-          return;
-        }
-      }
-
-      const queuedMsg = settings.channels.email
-        ? 'Test clinic email is ready. Open your Unified Inbox to read it.'
-        : 'Test clinic email is waiting. Turn Email ON above to read it in your Unified Inbox.';
-      setEmailNotice(queuedMsg);
-      setStatusMessage(queuedMsg);
-    } finally {
-      setIsSendingTestEmail(false);
     }
   };
 
@@ -561,8 +511,8 @@ export function MyDataPage({
               Automatic Email Reading
             </h3>
             <p className="text-[18px] text-muted">
-              Choose either safe option below. This helper can only read emails
-              — it can never send, change, or delete them.
+              Sign in with your Gmail or Outlook account below. This helper can
+              only read emails — it can never send, change, or delete them.
             </p>
           </div>
 
@@ -607,85 +557,21 @@ export function MyDataPage({
             </div>
           ) : null}
 
-          {/* Option 1: Read-Only Email Sign-In */}
-          <div className="rounded-chip border border-line bg-white p-4 space-y-4">
-            <p className="text-[18px] font-bold text-ink">
-              Option 1: Read-Only Email Sign-In
-            </p>
+          <div className="flex flex-wrap gap-3">
+            <SeniorButton
+              variant="primary"
+              icon={<Mail size={20} />}
+              onClick={() => handleCloudSignIn('Gmail')}
+            >
+              Sign In with Gmail (Read-Only)
+            </SeniorButton>
 
-            <div className="space-y-2">
-              <label
-                htmlFor="connect-email-input"
-                className="block text-[18px] font-semibold text-ink"
-              >
-                Your email address
-              </label>
-              <input
-                id="connect-email-input"
-                type="email"
-                value={emailInput}
-                onChange={(e) => setEmailInput(e.target.value)}
-                placeholder="For example: grandma@gmail.com"
-                className="min-h-[56px] w-full rounded-chip border-2 border-line bg-canvas px-4 text-[18px] text-ink focus:border-brand"
-              />
-            </div>
-
-            <div className="space-y-2">
-              <label
-                htmlFor="connect-email-provider"
-                className="block text-[18px] font-semibold text-ink"
-              >
-                Email provider
-              </label>
-              <select
-                id="connect-email-provider"
-                value={emailProvider}
-                onChange={(e) =>
-                  setEmailProvider(e.target.value as EmailProvider)
-                }
-                className="min-h-[56px] w-full rounded-chip border-2 border-line bg-canvas px-4 text-[18px] text-ink focus:border-brand"
-              >
-                <option value="Gmail">Gmail</option>
-                <option value="Outlook">Outlook</option>
-              </select>
-            </div>
-
-            <div className="flex flex-wrap gap-3">
-              <SeniorButton
-                variant="primary"
-                icon={<Mail size={20} />}
-                onClick={() => void handleConnectEmail()}
-              >
-                Connect Read-Only Email
-              </SeniorButton>
-
-              <SeniorButton
-                variant="secondary"
-                icon={<Mail size={20} />}
-                onClick={handleCloudLoginRedirect}
-              >
-                Open {emailProvider} Cloud Sign-In
-              </SeniorButton>
-            </div>
-          </div>
-
-          {/* Option 2: No-Login Email Forwarding */}
-          <div className="rounded-chip border border-line bg-white p-4 space-y-3">
-            <p className="text-[18px] font-bold text-ink">
-              Option 2: No-Login Email Forwarding
-            </p>
-            <p className="text-[18px] text-muted">
-              Family or clinic emails forwarded to this helper arrive
-              automatically whenever Email is turned ON above — no sign-in
-              required.
-            </p>
             <SeniorButton
               variant="secondary"
-              icon={<Send size={20} />}
-              disabled={isSendingTestEmail}
-              onClick={() => void handleSendTestEmail()}
+              icon={<Mail size={20} />}
+              onClick={() => handleCloudSignIn('Outlook')}
             >
-              Send Test Clinic Email
+              Sign In with Outlook (Read-Only)
             </SeniorButton>
           </div>
         </div>

@@ -40,7 +40,10 @@ import {
   sendSampleEmailToRelay,
   syncEmailsFromRelay,
 } from '@/lib/inbox/emailClient';
-import { EMAIL_RECONNECT_MESSAGE } from '@/lib/inbox/emailChannel';
+import {
+  EMAIL_RECONNECT_MESSAGE,
+  validateReadOnlyScopes,
+} from '@/lib/inbox/emailChannel';
 import { dispatchApiRequest } from '@/lib/server/viteApiPlugin';
 import { TokenRegistry } from '@/lib/server/auth';
 import { createRateLimiter } from '@/lib/server/rateLimit';
@@ -888,15 +891,18 @@ describe('Task 3: Automatic Email Activation UI & Relay Sync', () => {
     }
   });
 
-  it('MyDataPage and UnifiedInboxPage email connection controls contain zero banned jargon and all buttons have min-h-[56px]', () => {
+  it('MyDataPage renders only Sign In with Gmail and Sign In with Outlook buttons with zero banned jargon', () => {
     const myDataHtml = renderToStaticMarkup(
       <MyDataPage initialSettings={createDefaultSettings()} initialAudit={[]} />
     );
     expect(myDataHtml).toContain('Automatic Email Reading');
-    expect(myDataHtml).toContain('Connect Read-Only Email');
-    expect(myDataHtml).toContain('Send Test Clinic Email');
-    expect(myDataHtml).toContain('id="connect-email-input"');
-    expect(myDataHtml).toContain('id="connect-email-provider"');
+    expect(myDataHtml).toContain('Sign In with Gmail (Read-Only)');
+    expect(myDataHtml).toContain('Sign In with Outlook (Read-Only)');
+    expect(myDataHtml).not.toContain('Connect Read-Only Email');
+    expect(myDataHtml).not.toContain('Option 2: No-Login Email Forwarding');
+    expect(myDataHtml).not.toContain('Send Test Clinic Email');
+    expect(myDataHtml).not.toContain('connect-email-input');
+    expect(myDataHtml).not.toContain('connect-email-provider');
 
     const inboxHtml = renderToStaticMarkup(
       <UnifiedInboxPage initialSettings={createDefaultSettings()} initialItems={[]} />
@@ -1516,5 +1522,235 @@ describe('Task 1: Gmail & Outlook Cloud Sign-In Redirect, Callback, and Fetch', 
       expect(storedItems).toHaveLength(1);
       expect(storedItems[0].id).toBe('existing-saved-1');
     }
+  });
+});
+
+describe('Task 2: Read-Only Identity Scopes & MyDataPage Cloud Sign-In Lifecycle', () => {
+  it('validateReadOnlyScopes accepts standard Google and Microsoft read-only identity scopes while rejecting write scopes', async () => {
+    const googleExpanded = validateReadOnlyScopes([
+      'https://www.googleapis.com/auth/gmail.readonly',
+      'https://www.googleapis.com/auth/userinfo.email',
+      'https://www.googleapis.com/auth/userinfo.profile',
+      'openid',
+    ]);
+    expect(googleExpanded.ok).toBe(true);
+
+    const microsoftExpanded = validateReadOnlyScopes([
+      'https://graph.microsoft.com/mail.read',
+      'user.read',
+      'https://graph.microsoft.com/user.read',
+      'User.Read',
+      'openid',
+      'email',
+    ]);
+    expect(microsoftExpanded.ok).toBe(true);
+
+    const stillRejectsWrite = validateReadOnlyScopes([
+      'https://www.googleapis.com/auth/userinfo.email',
+      'https://www.googleapis.com/auth/gmail.send',
+    ]);
+    expect(stillRejectsWrite.ok).toBe(false);
+
+    const stillRejectsDelete = validateReadOnlyScopes([
+      'user.read',
+      'https://graph.microsoft.com/mail.readwrite',
+    ]);
+    expect(stillRejectsDelete.ok).toBe(false);
+
+    // Live Google callback expanding email -> userinfo.email completes cleanly
+    const savedTokens: any[] = [];
+    let savedSettings = createDefaultSettings();
+    const mockVault = {
+      saveOAuthToken: async (rec: any) => {
+        savedTokens.push(rec);
+        return { ok: true as const, value: undefined };
+      },
+      saveSettings: async (next: any) => {
+        savedSettings = next;
+        return { ok: true as const, value: undefined };
+      },
+    };
+    const googleFetch = (async () =>
+      new Response(JSON.stringify({ email: 'ah.mei@gmail.com' }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })) as typeof fetch;
+
+    const liveCallback = await completeCloudLoginCallback({
+      vault: mockVault,
+      settings: savedSettings,
+      hash: '#access_token=ya29.expanded&scope=https://www.googleapis.com/auth/gmail.readonly%20https://www.googleapis.com/auth/userinfo.email%20openid&state=provider%3DGmail',
+      fetchFn: googleFetch,
+    });
+    expect(liveCallback.ok).toBe(true);
+    if (liveCallback.ok) {
+      expect(liveCallback.record.account).toBe('ah.mei@gmail.com');
+      expect(liveCallback.settings.channels.email).toBe(true);
+    }
+  });
+
+  it('MyDataPage skips callback completion on normal mount without triggering an error alert, and completes hash callback + cleans URL when present', async () => {
+    const runMyDataMount = async (params: {
+      search: string;
+      hash: string;
+      fetchFn?: typeof fetch;
+    }) => {
+      const replaceState = vi.fn();
+      const assign = vi.fn();
+      const onSettingsChange = vi.fn();
+      const savedTokens: any[] = [];
+      let vaultSettings = createDefaultSettings();
+      const mockVault: any = {
+        getSettings: async () => ({ ok: true, value: vaultSettings }),
+        saveSettings: async (next: any) => {
+          vaultSettings = next;
+          return { ok: true, value: undefined };
+        },
+        listAudit: async () => ({ ok: true, value: [] }),
+        listOAuthTokens: async () => ({ ok: true, value: [...savedTokens] }),
+        saveOAuthToken: async (rec: any) => {
+          savedTokens.push(rec);
+          return { ok: true, value: undefined };
+        },
+      };
+
+      const stateSlots: unknown[] = [];
+      const effectPrevDeps: Array<readonly unknown[] | undefined> = [];
+      let stateCursor = 0;
+      let effectCursor = 0;
+      let queuedEffects: Array<() => void> = [];
+
+      const useStateSpy = vi.spyOn(React, 'useState').mockImplementation(((
+        initialState: unknown
+      ) => {
+        const idx = stateCursor++;
+        if (!(idx in stateSlots)) {
+          stateSlots[idx] =
+            typeof initialState === 'function'
+              ? (initialState as () => unknown)()
+              : initialState;
+        }
+        const setState = (next: unknown) => {
+          stateSlots[idx] =
+            typeof next === 'function'
+              ? (next as (prev: unknown) => unknown)(stateSlots[idx])
+              : next;
+        };
+        return [stateSlots[idx], setState];
+      }) as typeof React.useState);
+      const useMemoSpy = vi
+        .spyOn(React, 'useMemo')
+        .mockImplementation((factory) => factory());
+      const useCallbackSpy = vi
+        .spyOn(React, 'useCallback')
+        .mockImplementation((fn) => fn);
+      const useEffectSpy = vi
+        .spyOn(React, 'useEffect')
+        .mockImplementation((effect, deps) => {
+          const idx = effectCursor++;
+          const prevDeps = effectPrevDeps[idx];
+          const depsChanged =
+            !prevDeps ||
+            !deps ||
+            prevDeps.length !== deps.length ||
+            deps.some((d, i) => !Object.is(d, prevDeps[i]));
+          if (depsChanged) {
+            effectPrevDeps[idx] = deps ? [...deps] : undefined;
+            queuedEffects.push(effect as () => void);
+          }
+        });
+
+      const fetchSpy = params.fetchFn
+        ? vi.spyOn(globalThis, 'fetch').mockImplementation(params.fetchFn)
+        : vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('unexpected fetch'));
+
+      vi.stubGlobal('window', {
+        location: {
+          origin: 'http://localhost:5173',
+          pathname: '/my-data',
+          search: params.search,
+          hash: params.hash,
+          assign,
+        },
+        history: { replaceState },
+      });
+
+      try {
+        const renderPass = () => {
+          stateCursor = 0;
+          effectCursor = 0;
+          queuedEffects = [];
+          const tree = MyDataPage({
+            initialSettings: createDefaultSettings(),
+            initialAudit: [],
+            vault: mockVault,
+            onSettingsChange,
+          });
+          for (const eff of queuedEffects) {
+            eff();
+          }
+          return tree;
+        };
+
+        renderPass();
+        await new Promise((r) => setTimeout(r, 30));
+        const finalTree = renderPass();
+        const alerts = findElements(finalTree, (el) => el.props.role === 'alert');
+        const badges = findElements(finalTree, (el) => el.props['data-badge'] === 'true');
+        return {
+          replaceState,
+          onSettingsChange,
+          savedTokens,
+          fetchSpy,
+          alerts,
+          badges,
+        };
+      } finally {
+        vi.unstubAllGlobals();
+        fetchSpy.mockRestore();
+        useEffectSpy.mockRestore();
+        useCallbackSpy.mockRestore();
+        useMemoSpy.mockRestore();
+        useStateSpy.mockRestore();
+      }
+    };
+
+    // 1. Normal visit: no callback params -> no fetch, no alert, no history.replaceState
+    const normal = await runMyDataMount({ search: '', hash: '' });
+    expect(normal.fetchSpy).not.toHaveBeenCalled();
+    expect(normal.alerts).toHaveLength(0);
+    expect(normal.replaceState).not.toHaveBeenCalled();
+    expect(normal.savedTokens).toHaveLength(0);
+
+    // 2. Hash callback with Gmail expanded userinfo.email scope -> connects account, updates settings, cleans URL
+    const callbackRes = await runMyDataMount({
+      search: '',
+      hash: '#access_token=ya29.hash-ok&scope=https://www.googleapis.com/auth/gmail.readonly%20https://www.googleapis.com/auth/userinfo.email&state=provider%3DGmail',
+      fetchFn: (async () =>
+        new Response(JSON.stringify({ email: 'grandma.lee@gmail.com' }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })) as typeof fetch,
+    });
+    expect(callbackRes.alerts).toHaveLength(0);
+    expect(callbackRes.savedTokens).toHaveLength(1);
+    expect(callbackRes.savedTokens[0].account).toBe('grandma.lee@gmail.com');
+    expect(callbackRes.savedTokens[0].token).toBe('ya29.hash-ok');
+    expect(callbackRes.onSettingsChange).toHaveBeenCalledWith(
+      expect.objectContaining({
+        channels: expect.objectContaining({ email: true }),
+      })
+    );
+    expect(callbackRes.badges.length).toBeGreaterThan(0);
+    expect(callbackRes.replaceState).toHaveBeenCalledWith(null, '', '/my-data');
+
+    // 3. Callback with rejected write scope -> displays error alert and cleans URL
+    const rejectedRes = await runMyDataMount({
+      search: '',
+      hash: '#access_token=ya29.bad&scope=https://mail.google.com/&state=provider%3DGmail',
+    });
+    expect(rejectedRes.alerts.length).toBeGreaterThan(0);
+    expect(rejectedRes.savedTokens).toHaveLength(0);
+    expect(rejectedRes.replaceState).toHaveBeenCalledWith(null, '', '/my-data');
   });
 });

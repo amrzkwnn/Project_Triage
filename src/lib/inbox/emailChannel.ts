@@ -25,8 +25,12 @@ export const EMAIL_MALFORMED_NOTICE =
 const ALLOWED_READONLY_SCOPES = new Set<string>([
   'gmail.readonly',
   'https://www.googleapis.com/auth/gmail.readonly',
+  'https://www.googleapis.com/auth/userinfo.email',
+  'https://www.googleapis.com/auth/userinfo.profile',
   'mail.read',
   'https://graph.microsoft.com/mail.read',
+  'user.read',
+  'https://graph.microsoft.com/user.read',
   'email.readonly',
   'openid',
   'email',
