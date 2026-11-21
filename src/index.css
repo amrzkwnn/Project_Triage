@@ -1,0 +1,314 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ---------------------------------------------------------------------------
+   Design tokens (single source of truth mirrored in tailwind.config.js)
+--------------------------------------------------------------------------- */
+:root {
+  --canvas: #f7f8fa;
+  --ink: #0f172a;
+  --ink-soft: #64748b;
+  --brand: #0f766e;
+  --urgent: #dc2626;
+}
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    margin: 0;
+    background: var(--canvas);
+    color: var(--ink);
+    font-family: 'Inter Variable', Inter, system-ui, -apple-system, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+    overscroll-behavior: none;
+  }
+
+  ::selection {
+    background: #ccfbf1;
+    color: #0f172a;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   Type helpers
+--------------------------------------------------------------------------- */
+.tnum {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'tnum';
+}
+
+/* ---------------------------------------------------------------------------
+   Scroll areas (inside the phone screen only)
+--------------------------------------------------------------------------- */
+.app-scroll {
+  overflow-y: auto;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  scroll-behavior: smooth;
+}
+.app-scroll::-webkit-scrollbar {
+  display: none;
+}
+
+.no-scrollbar {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+/* ---------------------------------------------------------------------------
+   UI chrome behavior
+--------------------------------------------------------------------------- */
+.chrome {
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.pressable {
+  cursor: pointer;
+  transition: transform 0.18s ease-out;
+}
+.pressable:active {
+  transform: scale(0.97);
+}
+
+/* ---------------------------------------------------------------------------
+   Phone device body
+--------------------------------------------------------------------------- */
+.phone-body {
+  background: linear-gradient(150deg, #3d424a 0%, #17191d 28%, #262a2f 60%, #101215 100%);
+}
+
+/* ---------------------------------------------------------------------------
+   Motion
+--------------------------------------------------------------------------- */
+@keyframes fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@keyframes pop-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(14px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes collapse {
+  from {
+    opacity: 1;
+    transform: none;
+    max-height: 200px;
+  }
+  to {
+    opacity: 0;
+    transform: scale(0.96);
+    max-height: 0;
+    margin-bottom: 0;
+  }
+}
+@keyframes check-pop {
+  0% {
+    transform: scale(0.5);
+  }
+  60% {
+    transform: scale(1.18);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+@keyframes shimmer {
+  from {
+    background-position: 200% 0;
+  }
+  to {
+    background-position: -200% 0;
+  }
+}
+@keyframes pulse-ring {
+  0% {
+    box-shadow: 0 0 0 0 rgba(15, 118, 110, 0.35);
+  }
+  70% {
+    box-shadow: 0 0 0 12px rgba(15, 118, 110, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(15, 118, 110, 0);
+  }
+}
+
+.anim-fade-up {
+  animation: fade-up 0.22s ease-out both;
+}
+.anim-fade-in {
+  animation: fade-in 0.2s ease-out both;
+}
+.anim-pop {
+  animation: pop-in 0.18s ease-out both;
+}
+.anim-toast {
+  animation: toast-in 0.22s ease-out both;
+}
+.anim-collapse {
+  animation: collapse 0.28s ease-out forwards;
+  overflow: hidden;
+}
+.anim-check {
+  animation: check-pop 0.28s ease-out;
+}
+.skeleton {
+  background: linear-gradient(90deg, #eef1f5 25%, #f7f8fa 37%, #eef1f5 63%);
+  background-size: 400% 100%;
+  animation: shimmer 1.4s ease-in-out infinite;
+}
+.pulse-ring {
+  animation: pulse-ring 1.6s ease-out infinite;
+}
+
+/* ---------------------------------------------------------------------------
+   Inline SVG document images
+--------------------------------------------------------------------------- */
+.doc-svg svg {
+  width: 100%;
+  height: auto;
+  display: block;
+}
+
+/* ---------------------------------------------------------------------------
+   Print: only the record sheet, never the phone frame or app chrome.
+   PrintDoc portals a .print-doc block straight to <body>.
+--------------------------------------------------------------------------- */
+.print-doc {
+  display: none;
+}
+
+@media print {
+  html,
+  body {
+    height: auto !important;
+    background: #fff !important;
+  }
+  #root {
+    display: none !important;
+  }
+  .print-doc {
+    display: block;
+    font-family: 'Inter Variable', Inter, system-ui, sans-serif;
+    color: #0f172a;
+    max-width: 720px;
+    margin: 0 auto;
+    padding: 24px;
+  }
+  .print-doc h1 {
+    font-size: 22px;
+    font-weight: 700;
+    margin: 0 0 6px;
+  }
+  .print-doc .print-meta {
+    color: #64748b;
+    font-size: 12px;
+    margin-bottom: 16px;
+  }
+  .print-doc .print-summary {
+    border: 1px solid #ccfbf1;
+    background: #f0fdfa;
+    border-radius: 12px;
+    padding: 12px 16px;
+    font-size: 12.5px;
+    line-height: 1.6;
+    margin-bottom: 20px;
+  }
+  .print-doc table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12.5px;
+  }
+  .print-doc th {
+    text-align: left;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: #64748b;
+    border-bottom: 1px solid #e7eaf0;
+    padding: 6px 8px;
+  }
+  .print-doc td {
+    border-bottom: 1px solid #eef1f5;
+    padding: 8px;
+  }
+  .print-doc td.abnormal {
+    color: #dc2626;
+    font-weight: 700;
+  }
+  .print-doc .print-footer {
+    margin-top: 24px;
+    color: #94a3b8;
+    font-size: 10.5px;
+    border-top: 1px solid #e7eaf0;
+    padding-top: 8px;
+  }
+}
+
+@keyframes col-in {
+  from {
+    opacity: 0;
+    transform: translateY(14px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.anim-col {
+  animation: col-in 0.45s ease-out both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

@@ -1,0 +1,16 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# Local tooling / test artifacts
+.playwright-cli/
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Internal planning doc (kept local only)
+MVP/
