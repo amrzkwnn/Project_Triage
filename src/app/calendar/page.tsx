@@ -5,10 +5,11 @@ import { Temporal } from 'temporal-polyfill';
 import {
   AlertTriangle,
   Bell,
-  Calendar as CalendarIcon,
+  CalendarCheck,
   Camera,
   Check,
   Lock,
+  MapPin,
   Pencil,
   Plus,
   Receipt,
@@ -21,6 +22,9 @@ import {
   X,
 } from 'lucide-react';
 import { BackToHome } from '@/components/BackToHome';
+import { EmptyState } from '@/components/EmptyState';
+import { MonthCalendar } from '@/components/MonthCalendar';
+import { SegmentedControl } from '@/components/SegmentedControl';
 import { SeniorButton } from '@/components/SeniorButton';
 import { StatusLive } from '@/components/StatusLive';
 import { confirmFromTap } from '@/lib/actions/confirmation';
@@ -174,6 +178,14 @@ export function CalendarPage({
   );
   const [events, setEvents] = useState<CalendarEvent[]>(initialEvents ?? []);
   const [viewMode, setViewMode] = useState<CalendarViewMode>(initialView);
+  const [selectedIsoDate, setSelectedIsoDate] = useState<string>(() =>
+    todayDate.toString()
+  );
+
+  const selectedDate = useMemo(() => {
+    const parsed = parsePlainDate(selectedIsoDate);
+    return parsed.ok ? parsed.value : todayDate;
+  }, [selectedIsoDate, todayDate]);
 
   // Add / Edit / Delete confirmation state
   const [formOpen, setFormOpen] = useState<boolean>(false);
@@ -241,29 +253,34 @@ export function CalendarPage({
   };
 
   const todayEvents = useMemo(
-    () => viewToday(events, todayDate),
-    [events, todayDate]
+    () => viewToday(events, selectedDate),
+    [events, selectedDate]
   );
   const weekGroups = useMemo(
-    () => viewWeek(events, todayDate),
-    [events, todayDate]
+    () => viewWeek(events, selectedDate),
+    [events, selectedDate]
   );
   const monthGroups = useMemo(
     () =>
       viewMonth(
         events,
         Temporal.PlainYearMonth.from({
-          year: todayDate.year,
-          month: todayDate.month,
+          year: selectedDate.year,
+          month: selectedDate.month,
         })
       ),
-    [events, todayDate]
+    [events, selectedDate]
   );
+
+  const handleSelectCalendarDate = (isoDate: string) => {
+    setSelectedIsoDate(isoDate);
+    setFormDate(isoDate);
+  };
 
   const openAddForm = () => {
     setEditingId(undefined);
     setFormTitle('');
-    setFormDate(todayDate.toString());
+    setFormDate(selectedDate.toString());
     setFormTime('09:00');
     setFormLocation('');
     setFormCategory('Medical');
@@ -586,30 +603,48 @@ export function CalendarPage({
       <article
         key={ev.id}
         data-card="true"
-        className={`rounded-2xl border-2 bg-white p-5 space-y-3 ${meta.borderClass}`}
+        className="rounded-card border border-line bg-white p-4 shadow-card space-y-3"
       >
-        <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="flex min-w-0 items-start gap-3">
+            <div className="shrink-0 rounded-chip border border-brand-soft bg-brand-wash px-3 py-2 text-center">
+              <p className="text-[16px] font-bold leading-none text-brand-deep tnum">
+                {ev.time ?? 'All day'}
+              </p>
+              <p className="mt-1 text-[12px] font-semibold text-muted tnum">
+                {ev.date}
+              </p>
+            </div>
+            <div className="min-w-0 space-y-1">
+              <h3 className="text-[20px] font-bold leading-snug text-ink">
+                {ev.title}
+              </h3>
+              {ev.location ? (
+                <p className="flex items-center gap-1.5 text-[16px] text-muted">
+                  <span
+                    aria-hidden="true"
+                    className="inline-flex shrink-0 text-brand"
+                  >
+                    <MapPin size={16} />
+                  </span>
+                  <span>{ev.location}</span>
+                </p>
+              ) : null}
+            </div>
+          </div>
+
           <span
             data-badge="true"
-            className={`inline-flex items-center gap-2 rounded-lg border-2 px-3 py-1.5 text-[18px] font-bold ${meta.badgeClass}`}
+            className={`inline-flex items-center gap-2 rounded-full border-2 px-3 py-1 text-[15px] font-bold ${meta.badgeClass}`}
           >
             <span aria-hidden="true" className="inline-flex shrink-0">
               {renderCategoryIcon(ev.category)}
             </span>
             <span>{meta.label}</span>
           </span>
-          <p className="text-[18px] font-bold text-[#111827]">
-            {ev.date}
-            {ev.time ? ` • ${ev.time}` : ' • All day'}
-          </p>
         </div>
 
-        <h3 className="text-[20px] font-bold text-[#111827]">{ev.title}</h3>
-        {ev.location ? (
-          <p className="text-[18px] text-[#111827]">Location: {ev.location}</p>
-        ) : null}
-
-        <div className="flex flex-wrap gap-3 pt-1">
+        <div className="flex flex-wrap gap-3 border-t border-line/70 pt-3">
           <SeniorButton
             variant="secondary"
             icon={<Pencil size={20} />}
@@ -630,19 +665,20 @@ export function CalendarPage({
   };
 
   return (
-    <div className="space-y-8">
+    <div className="space-y-6 pb-6">
       <BackToHome onClick={handleBack} />
 
       <section className="space-y-3">
-        <h1 className="text-[28px] font-bold leading-tight text-[#111827]">
-          Calendar
-        </h1>
-        <p className="text-[20px] leading-relaxed text-[#111827]">
-          See your plans clearly by day, week, or month, and review paper
-          calendar photos one event at a time.
-        </p>
-
-        <div className="flex flex-wrap gap-3 pt-1">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="min-w-0">
+            <h1 className="text-[28px] font-bold leading-tight tracking-tight text-ink">
+              Calendar
+            </h1>
+            <p className="mt-1 text-[16px] leading-relaxed text-muted">
+              See your plans clearly by day, week, or month, and review paper
+              calendar photos one event at a time.
+            </p>
+          </div>
           <SeniorButton
             variant="primary"
             icon={<Plus size={22} />}
@@ -656,19 +692,23 @@ export function CalendarPage({
       <StatusLive message={statusMessage} />
 
       {/* View Switcher */}
-      <nav aria-label="Calendar views" className="flex flex-wrap gap-3">
-        {(['Today', 'This Week', 'Month List'] as const).map((mode) => (
-          <SeniorButton
-            key={mode}
-            variant={viewMode === mode ? 'primary' : 'secondary'}
-            aria-pressed={viewMode === mode}
-            icon={<CalendarIcon size={20} />}
-            onClick={() => setViewMode(mode)}
-          >
-            {mode}
-          </SeniorButton>
-        ))}
-      </nav>
+      <SegmentedControl
+        options={[
+          { id: 'Today', label: 'Today' },
+          { id: 'This Week', label: 'This Week' },
+          { id: 'Month List', label: 'Month List' },
+        ]}
+        value={viewMode}
+        onChange={setViewMode}
+        ariaLabel="Calendar views"
+      />
+
+      {/* Dark Month Calendar Card */}
+      <MonthCalendar
+        selectedDate={selectedIsoDate}
+        onSelectDate={handleSelectCalendarDate}
+        events={events}
+      />
 
       {/* Delete Confirmation */}
       {pendingDeleteEvent ? (
@@ -676,7 +716,7 @@ export function CalendarPage({
           role="region"
           aria-label="Confirm delete event"
           data-card="true"
-          className="rounded-2xl border-2 border-[#BE123C] bg-[#FFF1F2] p-5 space-y-4"
+          className="rounded-card border-2 border-red-200 bg-red-50/90 p-5 shadow-card space-y-4"
         >
           <p className="text-[20px] font-bold text-[#881337]">
             Remove &ldquo;{pendingDeleteEvent.title}&rdquo; on{' '}
@@ -706,16 +746,16 @@ export function CalendarPage({
         <section
           aria-label={editingId ? 'Edit calendar event' : 'Add calendar event'}
           data-card="true"
-          className="rounded-2xl border-2 border-[#0F766E] bg-white p-5 space-y-4"
+          className="rounded-card border-2 border-brand-soft bg-white p-5 shadow-card space-y-4"
         >
-          <h2 className="text-[22px] font-bold text-[#111827]">
+          <h2 className="text-[22px] font-bold text-ink">
             {editingId ? 'Edit Event' : 'Add a New Event'}
           </h2>
           <form onSubmit={handleRequestSaveConfirm} className="space-y-4">
             <div className="space-y-1">
               <label
                 htmlFor="cal-title"
-                className="block text-[18px] font-semibold text-[#111827]"
+                className="block text-[18px] font-semibold text-ink"
               >
                 Event Name
               </label>
@@ -724,7 +764,7 @@ export function CalendarPage({
                 type="text"
                 value={formTitle}
                 onChange={(e) => setFormTitle(e.target.value)}
-                className="min-h-[56px] w-full rounded-xl border-2 border-[#111827] bg-[#FAF9F6] px-4 text-[18px] text-[#111827]"
+                className="min-h-[56px] w-full rounded-chip border-2 border-line bg-canvas px-4 text-[18px] text-ink focus:border-brand"
               />
             </div>
 
@@ -732,7 +772,7 @@ export function CalendarPage({
               <div className="space-y-1">
                 <label
                   htmlFor="cal-date"
-                  className="block text-[18px] font-semibold text-[#111827]"
+                  className="block text-[18px] font-semibold text-ink"
                 >
                   Date (YYYY-MM-DD)
                 </label>
@@ -741,14 +781,14 @@ export function CalendarPage({
                   type="text"
                   value={formDate}
                   onChange={(e) => setFormDate(e.target.value)}
-                  className="min-h-[56px] w-full rounded-xl border-2 border-[#111827] bg-[#FAF9F6] px-4 text-[18px] text-[#111827]"
+                  className="min-h-[56px] w-full rounded-chip border-2 border-line bg-canvas px-4 text-[18px] text-ink tnum focus:border-brand"
                 />
               </div>
 
               <div className="space-y-1">
                 <label
                   htmlFor="cal-time"
-                  className="block text-[18px] font-semibold text-[#111827]"
+                  className="block text-[18px] font-semibold text-ink"
                 >
                   Time (HH:MM, optional)
                 </label>
@@ -757,7 +797,7 @@ export function CalendarPage({
                   type="text"
                   value={formTime}
                   onChange={(e) => setFormTime(e.target.value)}
-                  className="min-h-[56px] w-full rounded-xl border-2 border-[#111827] bg-[#FAF9F6] px-4 text-[18px] text-[#111827]"
+                  className="min-h-[56px] w-full rounded-chip border-2 border-line bg-canvas px-4 text-[18px] text-ink tnum focus:border-brand"
                 />
               </div>
             </div>
@@ -765,7 +805,7 @@ export function CalendarPage({
             <div className="space-y-1">
               <label
                 htmlFor="cal-category"
-                className="block text-[18px] font-semibold text-[#111827]"
+                className="block text-[18px] font-semibold text-ink"
               >
                 Category
               </label>
@@ -775,7 +815,7 @@ export function CalendarPage({
                 onChange={(e) =>
                   setFormCategory(e.target.value as CalendarCategory)
                 }
-                className="min-h-[56px] w-full rounded-xl border-2 border-[#111827] bg-[#FAF9F6] px-4 text-[18px] text-[#111827]"
+                className="min-h-[56px] w-full rounded-chip border-2 border-line bg-canvas px-4 text-[18px] text-ink focus:border-brand"
               >
                 {CALENDAR_CATEGORIES.map((cat) => (
                   <option key={cat} value={cat}>
@@ -788,7 +828,7 @@ export function CalendarPage({
             <div className="space-y-1">
               <label
                 htmlFor="cal-location"
-                className="block text-[18px] font-semibold text-[#111827]"
+                className="block text-[18px] font-semibold text-ink"
               >
                 Location (optional)
               </label>
@@ -797,7 +837,7 @@ export function CalendarPage({
                 type="text"
                 value={formLocation}
                 onChange={(e) => setFormLocation(e.target.value)}
-                className="min-h-[56px] w-full rounded-xl border-2 border-[#111827] bg-[#FAF9F6] px-4 text-[18px] text-[#111827]"
+                className="min-h-[56px] w-full rounded-chip border-2 border-line bg-canvas px-4 text-[18px] text-ink focus:border-brand"
               />
             </div>
 
@@ -825,8 +865,8 @@ export function CalendarPage({
                 </SeniorButton>
               </div>
             ) : (
-              <div className="rounded-xl border-2 border-[#0F766E] bg-[#F0FDFA] p-4 space-y-3">
-                <p className="text-[20px] font-bold text-[#111827]">
+              <div className="rounded-card border-2 border-brand-soft bg-brand-wash p-4 space-y-3">
+                <p className="text-[20px] font-bold text-ink">
                   Save &ldquo;{formTitle}&rdquo; on {formDate}
                   {formTime ? ` at ${formTime}` : ''}?
                 </p>
@@ -851,25 +891,41 @@ export function CalendarPage({
         </section>
       ) : null}
 
-      {/* Active Calendar View */}
-      <section aria-labelledby="calendar-view-heading" className="space-y-4">
-        <h2
-          id="calendar-view-heading"
-          className="text-[24px] font-bold text-[#111827]"
-        >
-          {viewMode} ({todayDate.toString()})
-        </h2>
+      {/* Active Calendar View — Syed White Rounded Bottom Sheet */}
+      <section
+        aria-labelledby="calendar-view-heading"
+        className="anim-fade-up space-y-4 rounded-t-[20px] border border-line bg-white px-5 pb-8 pt-5 shadow-lift"
+      >
+        <div className="flex flex-wrap items-end justify-between gap-2 border-b border-line/70 pb-3">
+          <div className="min-w-0">
+            <h2
+              id="calendar-view-heading"
+              className="text-[22px] font-bold tracking-tight text-ink tnum"
+            >
+              {viewMode} ({selectedDate.toString()})
+            </h2>
+            <p className="mt-0.5 text-[14px] font-medium text-muted tnum">
+              {viewMode === 'Today'
+                ? todayEvents.length === 0
+                  ? 'Free day'
+                  : `${todayEvents.length} ${todayEvents.length === 1 ? 'event' : 'events'}`
+                : viewMode === 'This Week'
+                  ? '7-day schedule'
+                  : `${monthGroups.reduce((acc, g) => acc + g.events.length, 0)} events this month`}
+            </p>
+          </div>
+        </div>
 
         {viewMode === 'Today' ? (
           todayEvents.length === 0 ? (
-            <div
-              data-card="true"
-              className="rounded-2xl border-2 border-[#111827] bg-white p-5 text-[20px] font-semibold text-[#111827]"
-            >
-              Nothing planned
-            </div>
+            <EmptyState
+              icon={<CalendarCheck size={24} strokeWidth={2.2} />}
+              title="Nothing planned"
+              message="Tap a dotted date above or choose Add Event to save a plan."
+              className="border-2 border-dashed border-brand-soft shadow-none"
+            />
           ) : (
-            <div className="space-y-4">{todayEvents.map(renderEventCard)}</div>
+            <div className="space-y-3">{todayEvents.map(renderEventCard)}</div>
           )
         ) : null}
 
@@ -879,13 +935,13 @@ export function CalendarPage({
               <div
                 key={group.dateStr}
                 data-card="true"
-                className="rounded-2xl border-2 border-[#111827] bg-white p-5 space-y-3"
+                className="rounded-card border border-line bg-canvas/50 p-4 space-y-3"
               >
-                <h3 className="text-[20px] font-bold text-[#115E59]">
+                <h3 className="text-[18px] font-bold text-brand-deep tnum">
                   {group.dateStr}
                 </h3>
                 {group.events.length === 0 ? (
-                  <p className="text-[18px] text-[#111827]">
+                  <p className="text-[16px] text-muted">
                     {group.emptyLabel ?? 'Nothing planned'}
                   </p>
                 ) : (
@@ -900,21 +956,21 @@ export function CalendarPage({
 
         {viewMode === 'Month List' ? (
           monthGroups.length === 0 ? (
-            <div
-              data-card="true"
-              className="rounded-2xl border-2 border-[#111827] bg-white p-5 text-[20px] font-semibold text-[#111827]"
-            >
-              Nothing planned
-            </div>
+            <EmptyState
+              icon={<CalendarCheck size={24} strokeWidth={2.2} />}
+              title="Nothing planned"
+              message="No events saved for this month yet."
+              className="border-2 border-dashed border-brand-soft shadow-none"
+            />
           ) : (
             <div className="space-y-4">
               {monthGroups.map((group) => (
                 <div
                   key={group.dateStr}
                   data-card="true"
-                  className="rounded-2xl border-2 border-[#111827] bg-white p-5 space-y-3"
+                  className="rounded-card border border-line bg-canvas/50 p-4 space-y-3"
                 >
-                  <h3 className="text-[20px] font-bold text-[#115E59]">
+                  <h3 className="text-[18px] font-bold text-brand-deep tnum">
                     {group.dateStr}
                   </h3>
                   <div className="space-y-3">
@@ -931,14 +987,17 @@ export function CalendarPage({
       <section
         aria-labelledby="snap-heading"
         data-card="true"
-        className="rounded-2xl border-2 border-[#111827] bg-white p-5 space-y-4"
+        className="rounded-card border border-line bg-white p-5 shadow-card space-y-4"
       >
         <h2
           id="snap-heading"
-          className="flex items-center gap-2 text-[24px] font-bold text-[#111827]"
+          className="flex items-center gap-3 text-[22px] font-bold text-ink"
         >
-          <span aria-hidden="true" className="inline-flex shrink-0">
-            <Camera size={24} />
+          <span
+            aria-hidden="true"
+            className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-brand-wash text-brand"
+          >
+            <Camera size={22} />
           </span>
           <span>Paper Calendar Snap</span>
         </h2>
@@ -947,21 +1006,21 @@ export function CalendarPage({
           <div
             role="region"
             aria-label="Photos channel is off"
-            className="rounded-xl border-2 border-[#D97706] bg-[#FFFBEB] p-4 space-y-4"
+            className="rounded-card border-2 border-amber-200 bg-amber-50/70 p-4 space-y-4"
           >
             <span
               data-badge="true"
-              className="inline-flex items-center gap-2 rounded-lg border-2 border-[#D97706] bg-white px-3 py-1.5 text-[18px] font-bold text-[#92400E]"
+              className="inline-flex items-center gap-2 rounded-full border-2 border-[#D97706] bg-white px-3 py-1.5 text-[16px] font-bold text-[#92400E]"
             >
               <span aria-hidden="true" className="inline-flex shrink-0">
-                <Lock size={20} />
+                <Lock size={18} />
               </span>
               <span>Photo Access is OFF</span>
             </span>
-            <p className="text-[18px] font-semibold text-[#111827]">
+            <p className="text-[18px] font-semibold text-ink">
               {photosGate.message}
             </p>
-            <p className="text-[18px] text-[#111827]">
+            <p className="text-[16px] text-muted">
               Turn on the Photos channel to snap a paper calendar photo and
               review appointments one by one.
             </p>
@@ -990,38 +1049,38 @@ export function CalendarPage({
             </div>
           </div>
         ) : currentCandidate ? (
-          <div className="rounded-xl border-2 border-[#0F766E] bg-[#F0FDFA] p-4 space-y-4">
+          <div className="rounded-card border-2 border-brand-soft bg-brand-wash p-4 space-y-4">
             <div className="flex flex-wrap items-center justify-between gap-2">
-              <p className="text-[18px] font-bold text-[#115E59]">
+              <p className="text-[18px] font-bold text-brand-deep tnum">
                 Reviewing 1 of {snapQueue.length} remaining
               </p>
               {currentCandidateNeedsCheck ? (
                 <span
                   data-badge="true"
-                  className="inline-flex items-center gap-2 rounded-lg border-2 border-[#D97706] bg-[#FFFBEB] px-3 py-1.5 text-[18px] font-bold text-[#92400E]"
+                  className="inline-flex items-center gap-2 rounded-full border-2 border-[#D97706] bg-[#FFFBEB] px-3 py-1.5 text-[16px] font-bold text-[#92400E]"
                 >
                   <span aria-hidden="true" className="inline-flex shrink-0">
-                    <AlertTriangle size={20} />
+                    <AlertTriangle size={18} />
                   </span>
                   <span>Please check</span>
                 </span>
               ) : null}
             </div>
 
-            <p className="text-[20px] font-bold text-[#111827]">
+            <p className="text-[20px] font-bold text-ink">
               {currentCandidate.title}
             </p>
-            <p className="text-[18px] text-[#111827]">
+            <p className="text-[18px] text-muted tnum">
               Date: {currentCandidate.date}
               {currentCandidate.time ? ` • ${currentCandidate.time}` : ''} •{' '}
               {currentCandidate.category}
             </p>
 
             {currentCandidateNeedsCheck ? (
-              <div className="space-y-3 rounded-xl border-2 border-[#D97706] bg-white p-4">
+              <div className="space-y-3 rounded-card border-2 border-amber-300 bg-white p-4">
                 <label
                   htmlFor="snap-confirm-date"
-                  className="block text-[18px] font-semibold text-[#111827]"
+                  className="block text-[18px] font-semibold text-ink"
                 >
                   Please check and confirm this date (YYYY-MM-DD) before keeping:
                 </label>
@@ -1031,7 +1090,7 @@ export function CalendarPage({
                     type="text"
                     value={confirmDateInput}
                     onChange={(e) => setConfirmDateInput(e.target.value)}
-                    className="min-h-[56px] rounded-xl border-2 border-[#111827] bg-[#FAF9F6] px-4 text-[18px] text-[#111827]"
+                    className="min-h-[56px] rounded-chip border-2 border-line bg-canvas px-4 text-[18px] text-ink tnum focus:border-brand"
                   />
                   <SeniorButton
                     variant="primary"
@@ -1082,10 +1141,10 @@ export function CalendarPage({
           </div>
         ) : (
           <div className="space-y-4">
-            <div className="space-y-2">
+            <div className="rounded-card border-2 border-dashed border-brand-soft bg-white/70 p-6 text-center space-y-3">
               <label
                 htmlFor="calendar-snap-photo-input"
-                className="inline-flex min-h-[56px] cursor-pointer items-center gap-3 rounded-xl border-2 border-[#0F766E] bg-[#F0FDFA] px-5 py-3 text-[18px] font-semibold text-[#115E59]"
+                className="pressable inline-flex min-h-[56px] cursor-pointer items-center justify-center gap-3 rounded-full border-2 border-brand bg-brand-wash px-5 py-3 text-[18px] font-semibold text-brand-deep shadow-pill hover:bg-brand-soft/60"
               >
                 <span aria-hidden="true" className="inline-flex shrink-0">
                   <Upload size={22} />
@@ -1099,8 +1158,11 @@ export function CalendarPage({
                 onChange={(e) => void handleSnapPhotoPick(e)}
                 className="sr-only"
               />
+              <p className="text-[15px] text-muted">
+                Choose a clear JPEG or PNG photo of your paper wall calendar.
+              </p>
               {snapPhotoName ? (
-                <p className="text-[18px] font-semibold text-[#115E59]">
+                <p className="text-[16px] font-semibold text-brand-deep">
                   Selected calendar photo: {snapPhotoName}
                 </p>
               ) : null}
@@ -1109,7 +1171,7 @@ export function CalendarPage({
             <div className="space-y-3">
               <label
                 htmlFor="snap-text-input"
-                className="block text-[18px] font-semibold text-[#111827]"
+                className="block text-[18px] font-semibold text-ink"
               >
                 Paste lines from your paper wall calendar (YYYY-MM-DD Title)
               </label>
@@ -1119,7 +1181,7 @@ export function CalendarPage({
                 value={snapInputText}
                 onChange={(e) => setSnapInputText(e.target.value)}
                 placeholder="2026-07-18 10:00 Dentist Visit"
-                className="w-full rounded-xl border-2 border-[#111827] bg-[#FAF9F6] p-4 text-[18px] text-[#111827]"
+                className="w-full rounded-chip border-2 border-line bg-canvas p-4 text-[18px] text-ink focus:border-brand"
               />
               {snapError ? (
                 <p
@@ -1145,18 +1207,21 @@ export function CalendarPage({
       <section
         aria-labelledby="reminder-heading"
         data-card="true"
-        className="rounded-2xl border-2 border-[#111827] bg-white p-5 space-y-4"
+        className="rounded-card border border-line bg-white p-5 shadow-card space-y-4"
       >
         <h2
           id="reminder-heading"
-          className="flex items-center gap-2 text-[24px] font-bold text-[#111827]"
+          className="flex items-center gap-3 text-[22px] font-bold text-ink"
         >
-          <span aria-hidden="true" className="inline-flex shrink-0">
-            <Bell size={24} />
+          <span
+            aria-hidden="true"
+            className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-brand-wash text-brand"
+          >
+            <Bell size={22} />
           </span>
           <span>Reminder Timing</span>
         </h2>
-        <p className="text-[18px] text-[#111827]">
+        <p className="text-[16px] text-muted">
           Choose how early you would like a gentle reminder before each event:
         </p>
 

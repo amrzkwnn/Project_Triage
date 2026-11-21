@@ -25,6 +25,8 @@ import { EmptyState } from '@/components/EmptyState';
 import { FilterChips } from '@/components/FilterChips';
 import { SegmentedControl } from '@/components/SegmentedControl';
 import { MonthCalendar } from '@/components/MonthCalendar';
+import { HomeHub } from '@/app/page';
+import { CalendarPage } from '@/app/calendar/page';
 
 const BANNED_JARGON =
   /\b(sync|token|api|cache|error code|stack trace|exception|indexeddb|oauth|webhook|regex)\b/i;
@@ -549,5 +551,100 @@ describe('Task 3: Syed Shared UI Primitives', () => {
       useStateSpy.mockRestore();
       useMemoSpy.mockRestore();
     }
+  });
+});
+
+describe('Task 4: Syed Visual Design on HomeHub and CalendarPage', () => {
+  it('HomeHub renders Syed gradient hero card, tucked stats panel (-mt-3 mx-3), and helper cards with category accent strips', () => {
+    const html = renderToStaticMarkup(
+      <HomeHub initialSettings={createDefaultSettings()} initialItems={[]} />
+    );
+    expect(html).toContain('from-brand-soft via-brand-wash to-white');
+    expect(html).toContain('-mt-3 mx-3');
+    expect(html).toContain('need action');
+    expect(html).toContain('Welcome Home');
+    expect(html).toContain("Today&#x27;s Important Decisions");
+    expect(html).toContain('Nothing needs your attention today');
+    expect(html).toContain('from-teal-400 to-teal-300');
+    expect(html).toContain('from-violet-400 to-violet-300');
+  });
+
+  it('HomeHub renders red count pill and carousel dots when decisions exist', () => {
+    const html = renderToStaticMarkup(
+      <HomeHub
+        initialSettings={createDefaultSettings()}
+        initialItems={[
+          {
+            id: 'dec-1',
+            source: 'whatsappForward',
+            sender: 'City Clinic',
+            text: 'Clinic appointment tomorrow at 10:00.',
+            attachments: [],
+            receivedAt: '2026-07-10T08:00:00.000Z',
+            group: 'Personal',
+            priority: 'Important',
+            summary: {
+              fromApp: 'From WhatsApp',
+              whoSent: 'City Clinic',
+              actionNeeded: 'Add to calendar',
+              text: 'City Clinic sent an appointment reminder.',
+            },
+            tier: 2,
+            confidence: 0.9,
+            status: 'ok',
+          },
+        ]}
+      />
+    );
+    expect(html).toContain('bg-red-100 text-red-700');
+    expect(html).toContain('1 need action');
+    expect(html).toContain('h-[6px] rounded-full');
+    expect(html).toContain('w-5 bg-red-500');
+  });
+
+  it('CalendarPage renders Syed dark MonthCalendar card, SegmentedControl view switcher, and rounded-t-[20px] white day sheet', () => {
+    const html = renderToStaticMarkup(
+      <CalendarPage
+        initialSettings={createDefaultSettings()}
+        initialEvents={[]}
+        initialToday="2026-07-15"
+      />
+    );
+    expect(html).toContain('from-ink to-brand-deep');
+    expect(html).toContain('July 2026');
+    expect(html).toContain('rounded-t-[20px]');
+    expect(html).toContain('Nothing planned');
+    expect(html).toContain('Paper Calendar Snap');
+    expect(html).toContain('Reminder Timing');
+    expect(html).toContain('aria-label="Calendar views"');
+    expect(html).toContain('border-dashed border-brand-soft');
+  });
+
+  it('CalendarPage renders tabular time badge (tnum) and dashed photo dropzone when photos enabled', () => {
+    const html = renderToStaticMarkup(
+      <CalendarPage
+        initialSettings={{
+          ...createDefaultSettings(),
+          channels: { ...createDefaultSettings().channels, photos: true },
+        }}
+        initialEvents={[
+          {
+            id: 'ev-1',
+            title: 'Dr. Tan Checkup',
+            date: '2026-07-15',
+            time: '10:30',
+            location: 'Room 4B',
+            category: 'Medical',
+            createdAt: '2026-07-10T08:00:00.000Z',
+          },
+        ]}
+        initialToday="2026-07-15"
+      />
+    );
+    expect(html).toContain('tnum');
+    expect(html).toContain('10:30');
+    expect(html).toContain('Room 4B');
+    expect(html).toContain('border-dashed border-brand-soft');
+    expect(html).toContain('id="calendar-snap-photo-input"');
   });
 });
