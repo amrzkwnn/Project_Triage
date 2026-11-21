@@ -32,6 +32,16 @@ import { ScamShieldPage } from '@/app/scam-shield/page';
 import { AiMediaCheckPage } from '@/app/media-check/page';
 import { PhotoHelperPage } from '@/app/photo-helper/page';
 import { MyDataPage } from '@/app/my-data/page';
+import {
+  connectReadOnlyEmailAccount,
+  sendSampleEmailToRelay,
+  syncEmailsFromRelay,
+} from '@/lib/inbox/emailClient';
+import { dispatchApiRequest } from '@/lib/server/viteApiPlugin';
+import { TokenRegistry } from '@/lib/server/auth';
+import { createRateLimiter } from '@/lib/server/rateLimit';
+import { EncryptedRelayStore } from '@/lib/server/relay';
+import { createSafeLogger } from '@/lib/server/safeLog';
 
 const BANNED_JARGON =
   /\b(sync|token|api|cache|error code|stack trace|exception|indexeddb|oauth|webhook|regex)\b/i;
@@ -749,5 +759,154 @@ describe('Task 5: Syed Visual Design on Inbox, ScamShield, MediaCheck, PhotoHelp
     expect(myDataHtml).toContain('from-red-50/90 via-white to-red-50/40');
     expect(myDataHtml).toContain('rounded-card');
     expect(myDataHtml).toContain('shadow-card');
+  });
+});
+
+describe('Task 3: Automatic Email Activation UI & Relay Sync', () => {
+  it('connectReadOnlyEmailAccount validates read-only scopes, saves record, and enables email channel', async () => {
+    const savedTokens: any[] = [];
+    let savedSettings = createDefaultSettings();
+    const mockVault = {
+      saveOAuthToken: async (rec: any) => {
+        savedTokens.push(rec);
+        return { ok: true as const, value: undefined };
+      },
+      saveSettings: async (next: any) => {
+        savedSettings = next;
+        return { ok: true as const, value: undefined };
+      },
+    };
+
+    const rejected = await connectReadOnlyEmailAccount({
+      vault: mockVault,
+      settings: savedSettings,
+      emailAddress: 'senior@gmail.com',
+      provider: 'Gmail',
+      scopes: ['gmail.modify'],
+    });
+    expect(rejected.ok).toBe(false);
+    expect(savedTokens).toHaveLength(0);
+
+    const invalidEmail = await connectReadOnlyEmailAccount({
+      vault: mockVault,
+      settings: savedSettings,
+      emailAddress: 'not-an-email',
+      provider: 'Gmail',
+    });
+    expect(invalidEmail.ok).toBe(false);
+    expect(savedTokens).toHaveLength(0);
+
+    const connected = await connectReadOnlyEmailAccount({
+      vault: mockVault,
+      settings: savedSettings,
+      emailAddress: 'senior@gmail.com',
+      provider: 'Gmail',
+    });
+    expect(connected.ok).toBe(true);
+    if (connected.ok) {
+      expect(connected.settings.channels.email).toBe(true);
+      expect(connected.record.account).toBe('senior@gmail.com');
+      expect(connected.record.provider).toBe('Gmail');
+      expect(connected.message).not.toMatch(BANNED_JARGON);
+    }
+    expect(savedTokens).toHaveLength(1);
+    expect(savedSettings.channels.email).toBe(true);
+  });
+
+  it('syncEmailsFromRelay respects email consent gate and stores + acknowledges emails when email channel is ON', async () => {
+    const rt = {
+      tokenRegistry: new TokenRegistry(),
+      rateLimiter: createRateLimiter(),
+      relay: new EncryptedRelayStore(),
+      logger: createSafeLogger(),
+      now: () => Date.now(),
+    };
+    const localFetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? `http://localhost:5173${input}` : input.toString();
+      const res = await dispatchApiRequest(new Request(url, init), rt);
+      return res ?? new Response('Not found', { status: 404 });
+    }) as typeof fetch;
+
+    const sendRes = await sendSampleEmailToRelay({ fetchFn: localFetch });
+    expect(sendRes.ok).toBe(true);
+
+    const storedItems: any[] = [];
+    const mockVault: any = {
+      listItems: async () => ({ ok: true, value: [...storedItems] }),
+      putItem: async (item: any) => {
+        storedItems.push(item);
+        return { ok: true, value: undefined };
+      },
+      appendAudit: async () => ({ ok: true, value: undefined }),
+    };
+
+    // When email channel is OFF, consent gate blocks pulling and leaves queued email intact
+    const offPullRes = await syncEmailsFromRelay({
+      vault: mockVault,
+      settings: createDefaultSettings(),
+      fetchFn: localFetch,
+    });
+    expect(offPullRes.ok).toBe(false);
+    if (!offPullRes.ok) {
+      expect(offPullRes.errorMessage).not.toMatch(BANNED_JARGON);
+    }
+    expect(storedItems).toHaveLength(0);
+
+    const onSettings = {
+      ...createDefaultSettings(),
+      channels: { ...createDefaultSettings().channels, email: true },
+    };
+
+    const pullRes = await syncEmailsFromRelay({
+      vault: mockVault,
+      settings: onSettings,
+      fetchFn: localFetch,
+    });
+    expect(pullRes.ok).toBe(true);
+    if (pullRes.ok) {
+      expect(pullRes.stored).toHaveLength(1);
+      expect(pullRes.stored[0].source).toBe('email');
+      expect(pullRes.stored[0].text).toContain('Clinic Appointment Reminder');
+      expect(pullRes.stored[0].text).toContain('2026-07-24');
+      expect(pullRes.message).not.toMatch(BANNED_JARGON);
+    }
+
+    // Second pull after ack should return 0 new emails
+    const secondPull = await syncEmailsFromRelay({
+      vault: mockVault,
+      settings: onSettings,
+      fetchFn: localFetch,
+    });
+    expect(secondPull.ok).toBe(true);
+    if (secondPull.ok) {
+      expect(secondPull.stored).toHaveLength(0);
+      expect(secondPull.message).not.toMatch(BANNED_JARGON);
+    }
+  });
+
+  it('MyDataPage and UnifiedInboxPage email connection controls contain zero banned jargon and all buttons have min-h-[56px]', () => {
+    const myDataHtml = renderToStaticMarkup(
+      <MyDataPage initialSettings={createDefaultSettings()} initialAudit={[]} />
+    );
+    expect(myDataHtml).toContain('Automatic Email Reading');
+    expect(myDataHtml).toContain('Connect Read-Only Email');
+    expect(myDataHtml).toContain('Send Test Clinic Email');
+    expect(myDataHtml).toContain('id="connect-email-input"');
+    expect(myDataHtml).toContain('id="connect-email-provider"');
+
+    const inboxHtml = renderToStaticMarkup(
+      <UnifiedInboxPage initialSettings={createDefaultSettings()} initialItems={[]} />
+    );
+    expect(inboxHtml).toContain('Check for New Emails');
+
+    for (const html of [myDataHtml, inboxHtml]) {
+      const visible = html.replace(/<svg[\s\S]*?<\/svg>/gi, ' ').replace(/<[^>]+>/g, ' ');
+      expect(visible).not.toMatch(BANNED_JARGON);
+      const buttons = html.match(/<button\b[^>]*>[\s\S]*?<\/button>/gi) ?? [];
+      for (const btn of buttons) {
+        expect(btn).toContain('min-h-[56px]');
+        expect(stripTags(btn).length).toBeGreaterThan(0);
+      }
+    }
   });
 });

@@ -5,7 +5,9 @@ import {
   AlertTriangle,
   Check,
   Download,
+  Mail,
   RefreshCw,
+  Send,
   Shield,
   Sparkles,
   Trash2,
@@ -15,6 +17,12 @@ import {
 import { BackToHome } from '@/components/BackToHome';
 import { SeniorButton } from '@/components/SeniorButton';
 import { StatusLive } from '@/components/StatusLive';
+import {
+  connectReadOnlyEmailAccount,
+  sendSampleEmailToRelay,
+  syncEmailsFromRelay,
+  type EmailProvider,
+} from '@/lib/inbox/emailClient';
 import {
   ALL_CHANNELS,
   type AuditEntry,
@@ -98,6 +106,14 @@ export function MyDataPage({
     string | undefined
   >(undefined);
   const [statusMessage, setStatusMessage] = useState<string>('');
+  const [emailInput, setEmailInput] = useState<string>('');
+  const [emailProvider, setEmailProvider] = useState<EmailProvider>('Gmail');
+  const [connectedAccount, setConnectedAccount] = useState<
+    OAuthTokenRecord | undefined
+  >(undefined);
+  const [emailNotice, setEmailNotice] = useState<string | undefined>(undefined);
+  const [emailError, setEmailError] = useState<string | undefined>(undefined);
+  const [isSendingTestEmail, setIsSendingTestEmail] = useState<boolean>(false);
 
   const resolvedVault = useMemo(
     () => vault ?? (typeof window !== 'undefined' ? createVault() : undefined),
@@ -106,9 +122,12 @@ export function MyDataPage({
 
   const loadData = useCallback(async () => {
     if (!resolvedVault) return;
-    const [settingsRes, auditRes] = await Promise.all([
+    const [settingsRes, auditRes, tokensRes] = await Promise.all([
       resolvedVault.getSettings(),
       resolvedVault.listAudit(),
+      typeof resolvedVault.listOAuthTokens === 'function'
+        ? resolvedVault.listOAuthTokens()
+        : Promise.resolve({ ok: true as const, value: [] as OAuthTokenRecord[] }),
     ]);
     if (settingsRes.ok) {
       setSettings(settingsRes.value);
@@ -116,6 +135,9 @@ export function MyDataPage({
     }
     if (auditRes.ok) {
       setAuditEntries(auditRes.value);
+    }
+    if (tokensRes.ok && tokensRes.value.length > 0) {
+      setConnectedAccount(tokensRes.value[0]);
     }
   }, [resolvedVault]);
 
@@ -174,6 +196,65 @@ export function MyDataPage({
     setStatusMessage(
       `${CHANNEL_LABELS[channel]} is now ${nextEnabled ? 'ON' : 'OFF'}.`
     );
+  };
+
+  const handleConnectEmail = async () => {
+    setEmailError(undefined);
+    setEmailNotice(undefined);
+    const res = await connectReadOnlyEmailAccount({
+      vault: resolvedVault,
+      settings,
+      emailAddress: emailInput,
+      provider: emailProvider,
+    });
+    if (!res.ok) {
+      setEmailError(res.errorMessage);
+      setStatusMessage(res.errorMessage);
+      return;
+    }
+    setConnectedAccount(res.record);
+    setSettings(res.settings);
+    onSettingsChange?.(res.settings);
+    setEmailNotice(res.message);
+    setStatusMessage(res.message);
+  };
+
+  const handleSendTestEmail = async () => {
+    setEmailError(undefined);
+    setEmailNotice(undefined);
+    setIsSendingTestEmail(true);
+    try {
+      const sendRes = await sendSampleEmailToRelay();
+      if (!sendRes.ok) {
+        setEmailError(sendRes.errorMessage);
+        setStatusMessage(sendRes.errorMessage);
+        return;
+      }
+
+      if (settings.channels.email && resolvedVault) {
+        const pullRes = await syncEmailsFromRelay({
+          vault: resolvedVault,
+          settings,
+        });
+        if (pullRes.ok) {
+          const msg =
+            pullRes.stored.length > 0
+              ? 'Test clinic email sent and added to your Unified Inbox.'
+              : 'Test clinic email sent and checked in your Unified Inbox.';
+          setEmailNotice(msg);
+          setStatusMessage(msg);
+          return;
+        }
+      }
+
+      const queuedMsg = settings.channels.email
+        ? 'Test clinic email is ready. Open your Unified Inbox to read it.'
+        : 'Test clinic email is waiting. Turn Email ON above to read it in your Unified Inbox.';
+      setEmailNotice(queuedMsg);
+      setStatusMessage(queuedMsg);
+    } finally {
+      setIsSendingTestEmail(false);
+    }
   };
 
   const saveSettingsWithRollback = async (
@@ -310,6 +391,9 @@ export function MyDataPage({
       setSettings(defaults);
       setAiState(createAiToggleState(false));
       setAuditEntries([]);
+      setConnectedAccount(undefined);
+      setEmailNotice(undefined);
+      setEmailError(undefined);
       setEraseStep(0);
       setEraseResultMessage(
         'All your data and connected accounts have been erased from this device.'
@@ -330,6 +414,9 @@ export function MyDataPage({
     setSettings(defaults);
     setAiState(createAiToggleState(false));
     setAuditEntries([]);
+    setConnectedAccount(undefined);
+    setEmailNotice(undefined);
+    setEmailError(undefined);
     setEraseStep(0);
     setEraseResultMessage(res.value.message);
     setEraseInstructions(res.value.instructions);
@@ -411,6 +498,135 @@ export function MyDataPage({
               </div>
             );
           })}
+        </div>
+
+        {/* Automatic Email Reading Setup Card */}
+        <div
+          data-card="true"
+          className="rounded-card border border-brand-soft/80 bg-gradient-to-br from-brand-wash/70 via-white to-white p-5 shadow-card anim-fade-up space-y-5"
+        >
+          <div className="space-y-1.5">
+            <h3 className="text-[20px] font-bold tracking-tight text-ink">
+              Automatic Email Reading
+            </h3>
+            <p className="text-[18px] text-muted">
+              Choose either safe option below. This helper can only read emails
+              — it can never send, change, or delete them.
+            </p>
+          </div>
+
+          {connectedAccount ? (
+            <div>
+              <span
+                data-badge="true"
+                className="inline-flex items-center gap-2 rounded-full border-2 border-emerald-200 bg-emerald-50 px-3.5 py-1.5 text-[16px] font-bold text-emerald-800 shadow-pill"
+              >
+                <span aria-hidden="true" className="inline-flex shrink-0">
+                  <Check size={16} />
+                </span>
+                <span>
+                  Connected ({connectedAccount.provider}):{' '}
+                  {connectedAccount.account}
+                </span>
+              </span>
+            </div>
+          ) : null}
+
+          {emailError ? (
+            <div
+              role="alert"
+              className="flex items-start gap-2 rounded-chip border-2 border-[#BE123C] bg-red-50/80 p-3.5 text-[18px] font-semibold text-[#881337]"
+            >
+              <span aria-hidden="true" className="mt-0.5 inline-flex shrink-0">
+                <AlertTriangle size={20} />
+              </span>
+              <span>{emailError}</span>
+            </div>
+          ) : null}
+
+          {emailNotice ? (
+            <div
+              role="status"
+              className="flex items-start gap-2 rounded-chip border-2 border-brand-soft bg-brand-wash p-3.5 text-[18px] font-semibold text-brand-deep"
+            >
+              <span aria-hidden="true" className="mt-0.5 inline-flex shrink-0">
+                <Check size={20} />
+              </span>
+              <span>{emailNotice}</span>
+            </div>
+          ) : null}
+
+          {/* Option 1: Read-Only Email Sign-In */}
+          <div className="rounded-chip border border-line bg-white p-4 space-y-4">
+            <p className="text-[18px] font-bold text-ink">
+              Option 1: Read-Only Email Sign-In
+            </p>
+
+            <div className="space-y-2">
+              <label
+                htmlFor="connect-email-input"
+                className="block text-[18px] font-semibold text-ink"
+              >
+                Your email address
+              </label>
+              <input
+                id="connect-email-input"
+                type="email"
+                value={emailInput}
+                onChange={(e) => setEmailInput(e.target.value)}
+                placeholder="For example: grandma@gmail.com"
+                className="min-h-[56px] w-full rounded-chip border-2 border-line bg-canvas px-4 text-[18px] text-ink focus:border-brand"
+              />
+            </div>
+
+            <div className="space-y-2">
+              <label
+                htmlFor="connect-email-provider"
+                className="block text-[18px] font-semibold text-ink"
+              >
+                Email provider
+              </label>
+              <select
+                id="connect-email-provider"
+                value={emailProvider}
+                onChange={(e) =>
+                  setEmailProvider(e.target.value as EmailProvider)
+                }
+                className="min-h-[56px] w-full rounded-chip border-2 border-line bg-canvas px-4 text-[18px] text-ink focus:border-brand"
+              >
+                <option value="Gmail">Gmail</option>
+                <option value="Outlook">Outlook</option>
+              </select>
+            </div>
+
+            <SeniorButton
+              variant="primary"
+              icon={<Mail size={20} />}
+              onClick={() => void handleConnectEmail()}
+            >
+              Connect Read-Only Email
+            </SeniorButton>
+          </div>
+
+          {/* Option 2: No-Login Email Forwarding */}
+          <div className="rounded-chip border border-line bg-white p-4 space-y-3">
+            <p className="text-[18px] font-bold text-ink">
+              Option 2: No-Login Email Forwarding
+            </p>
+            <p className="text-[18px] text-muted">
+              Family or clinic emails forwarded to this helper arrive
+              automatically whenever Email is turned ON above — no sign-in
+              required.
+            </p>
+            <SeniorButton
+              variant="secondary"
+              icon={<Send size={20} />}
+              disabled={isSendingTestEmail}
+              onClick={() => void handleSendTestEmail()}
+            >
+              Send Test Clinic Email
+            </SeniorButton>
+          </div>
         </div>
       </section>
 

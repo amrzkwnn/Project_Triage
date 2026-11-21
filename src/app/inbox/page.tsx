@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
   Calendar,
@@ -10,6 +10,7 @@ import {
   Inbox,
   Mail,
   Plus,
+  RefreshCw,
   ScanEye,
   ShieldAlert,
   Smartphone,
@@ -31,6 +32,7 @@ import { canShowAskFamily, shareItemWithFamily } from '@/lib/actions/sharing';
 import { analyze } from '@/lib/ai/engine';
 import { isDuplicateEvent } from '@/lib/calendar/snap';
 import { availableForwardActions } from '@/lib/inbox/events';
+import { syncEmailsFromRelay } from '@/lib/inbox/emailClient';
 import { filterByTab, filterPromotions } from '@/lib/inbox/order';
 import { normalizeSource, parseIngestQuery } from '@/lib/inbox/parse';
 import { createPrescriptionItem } from '@/lib/inbox/prescription';
@@ -431,11 +433,72 @@ export function UnifiedInboxPage({
   const [pendingFamilyItemId, setPendingFamilyItemId] = useState<
     string | undefined
   >(undefined);
+  const [isCheckingEmails, setIsCheckingEmails] = useState<boolean>(false);
+  const autoCheckedEmailRef = useRef<boolean>(false);
 
   const resolvedVault = useMemo(
     () => vault ?? (typeof window !== 'undefined' ? createVault() : undefined),
     [vault]
   );
+
+  const runEmailCheck = useCallback(
+    async (
+      currentSettings: Settings,
+      options?: { silentOnError?: boolean }
+    ) => {
+      const gate = admit(currentSettings, { source: 'email' });
+      if (!gate.admit) {
+        if (!options?.silentOnError) {
+          setChannelOffChannel('email');
+          setActionError(gate.message);
+          setStatusMessage(gate.message);
+        }
+        return;
+      }
+
+      if (!resolvedVault) {
+        if (!options?.silentOnError) {
+          setStatusMessage('Checked for new emails. You are all caught up.');
+        }
+        return;
+      }
+
+      setIsCheckingEmails(true);
+      try {
+        const res = await syncEmailsFromRelay({
+          vault: resolvedVault,
+          settings: currentSettings,
+        });
+        if (!res.ok) {
+          if (!options?.silentOnError) {
+            setActionError(res.errorMessage);
+            setStatusMessage(res.errorMessage);
+          }
+          return;
+        }
+
+        if (res.stored.length > 0) {
+          const newIds = new Set(res.stored.map((item) => item.id));
+          setItems((prev) => [
+            ...res.stored,
+            ...prev.filter((item) => !newIds.has(item.id)),
+          ]);
+        }
+        if (!options?.silentOnError || res.stored.length > 0) {
+          setStatusMessage(res.message);
+        }
+      } finally {
+        setIsCheckingEmails(false);
+      }
+    },
+    [resolvedVault]
+  );
+
+  const handleCheckNewEmails = async () => {
+    setActionError(undefined);
+    setChannelOffChannel(undefined);
+    await runEmailCheck(settings, { silentOnError: false });
+  };
 
   const loadData = useCallback(async () => {
     if (!resolvedVault) return;
@@ -464,6 +527,18 @@ export function UnifiedInboxPage({
       void loadData();
     }
   }, [initialSettings, initialItems, initialEvents, loadData]);
+
+  useEffect(() => {
+    if (
+      initialItems === undefined &&
+      settings.channels.email &&
+      resolvedVault &&
+      !autoCheckedEmailRef.current
+    ) {
+      autoCheckedEmailRef.current = true;
+      void runEmailCheck(settings, { silentOnError: true });
+    }
+  }, [initialItems, settings, resolvedVault, runEmailCheck]);
 
   useEffect(() => {
     if (initialQuery !== undefined) {
@@ -725,8 +800,8 @@ export function UnifiedInboxPage({
           clear summaries.
         </p>
 
-        {/* Always-visible manual paste / photo entry button */}
-        <div className="pt-1">
+        {/* Always-visible manual paste / photo entry and email check buttons */}
+        <div className="flex flex-wrap gap-3 pt-1">
           <SeniorButton
             variant="primary"
             icon={<Plus size={22} />}
@@ -734,6 +809,14 @@ export function UnifiedInboxPage({
             onClick={() => setShowManualForm((prev) => !prev)}
           >
             + Paste Message or Pick Photo
+          </SeniorButton>
+          <SeniorButton
+            variant="secondary"
+            icon={<RefreshCw size={20} />}
+            disabled={isCheckingEmails}
+            onClick={() => void handleCheckNewEmails()}
+          >
+            Check for New Emails
           </SeniorButton>
         </div>
       </section>
