@@ -6,19 +6,19 @@ import type {
 } from '@/lib/types';
 import { normalizeSource } from '@/lib/inbox/parse';
 
-const SOURCE_LABELS: Record<Channel, string> = {
-  email: 'From Email',
-  whatsappForward: 'From WhatsApp',
-  smsPaste: 'From SMS',
-  messengerPaste: 'From Messenger',
-  photos: 'From Photo',
-};
+const SOURCE_LABELS = new Map<Channel, string>([
+  ['email', 'From Email'],
+  ['whatsappForward', 'From WhatsApp'],
+  ['smsPaste', 'From SMS'],
+  ['messengerPaste', 'From Messenger'],
+  ['photos', 'From Photo'],
+]);
 
 const MAX_SUMMARY_LENGTH = 300;
 
 function formatFromApp(source: string): string {
   const canonical = normalizeSource(source);
-  return canonical ? SOURCE_LABELS[canonical] : 'From Message';
+  return (canonical ? SOURCE_LABELS.get(canonical) : undefined) ?? 'From Message';
 }
 
 function toSafeClause(raw: string, maxLen: number): string {

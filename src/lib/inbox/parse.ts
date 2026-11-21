@@ -32,24 +32,24 @@ const MAX_TEXT_LENGTH = 10_000;
 const MAX_SENDER_LENGTH = 256;
 const MAX_ATTACHMENTS = 10;
 
-const CHANNEL_LOOKUP: Record<string, Channel> = {
-  email: 'email',
-  whatsappforward: 'whatsappForward',
-  whatsapp: 'whatsappForward',
-  smspaste: 'smsPaste',
-  sms: 'smsPaste',
-  messengerpaste: 'messengerPaste',
-  messenger: 'messengerPaste',
-  photos: 'photos',
-  photo: 'photos',
-};
+const CHANNEL_LOOKUP = new Map<string, Channel>([
+  ['email', 'email'],
+  ['whatsappforward', 'whatsappForward'],
+  ['whatsapp', 'whatsappForward'],
+  ['smspaste', 'smsPaste'],
+  ['sms', 'smsPaste'],
+  ['messengerpaste', 'messengerPaste'],
+  ['messenger', 'messengerPaste'],
+  ['photos', 'photos'],
+  ['photo', 'photos'],
+]);
 
 const ISO_TIMESTAMP_PATTERN =
   /^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2}):(\d{2})(?:\.\d{1,9})?(Z|([+-])(\d{2}):(\d{2}))$/;
 
 export function normalizeSource(raw: string): Channel | undefined {
   if (typeof raw !== 'string') return undefined;
-  return CHANNEL_LOOKUP[raw.trim().toLowerCase()];
+  return CHANNEL_LOOKUP.get(raw.trim().toLowerCase());
 }
 
 export function hasLoneSurrogate(value: string): boolean {
@@ -215,18 +215,18 @@ export function parseIngest(raw: unknown): Result<InboxItemDraft, IngestError> {
   if (record.text.length === 0) {
     return fail('text', 'missing', 'Please include the message text.');
   }
-  if (hasLoneSurrogate(record.text)) {
-    return fail(
-      'encoding',
-      'malformed',
-      'The message text contains unsupported characters and could not be read.'
-    );
-  }
   if (record.text.length > MAX_TEXT_LENGTH) {
     return fail(
       'text',
       'too-long',
       'This message is too long to add at once. Please shorten it to 10,000 characters or fewer.'
+    );
+  }
+  if (hasLoneSurrogate(record.text)) {
+    return fail(
+      'encoding',
+      'malformed',
+      'The message text contains unsupported characters and could not be read.'
     );
   }
 
@@ -236,18 +236,18 @@ export function parseIngest(raw: unknown): Result<InboxItemDraft, IngestError> {
     if (typeof record.sender !== 'string') {
       return fail('sender', 'malformed', 'The sender name could not be read.');
     }
-    if (hasLoneSurrogate(record.sender)) {
-      return fail(
-        'encoding',
-        'malformed',
-        'The sender name contains unsupported characters and could not be read.'
-      );
-    }
     if (record.sender.length > MAX_SENDER_LENGTH) {
       return fail(
         'sender',
         'too-long',
         'The sender name is too long. Please keep it to 256 characters or fewer.'
+      );
+    }
+    if (hasLoneSurrogate(record.sender)) {
+      return fail(
+        'encoding',
+        'malformed',
+        'The sender name contains unsupported characters and could not be read.'
       );
     }
     sender = record.sender;

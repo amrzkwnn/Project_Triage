@@ -252,13 +252,17 @@ describe('Inbox ingest parsing, printing, query decoding, validation, and dedupl
         expectedField: 'source' as IngestErrorField,
         expectedReason: 'too-long' as IngestErrorReason,
       })),
-      // Unrecognized source
+      // Unrecognized source (including Object.prototype keys)
       fc
-        .string({ minLength: 1, maxLength: 64 })
-        .filter(
-          (s) =>
-            s.trim().length > 0 &&
-            !RECOGNIZED_SOURCES.has(s.trim().toLowerCase())
+        .oneof(
+          fc.constantFrom('constructor', '__proto__', 'toString', 'valueOf'),
+          fc
+            .string({ minLength: 1, maxLength: 64 })
+            .filter(
+              (s) =>
+                s.trim().length > 0 &&
+                !RECOGNIZED_SOURCES.has(s.trim().toLowerCase())
+            )
         )
         .map((badSource) => ({
           raw: { source: badSource, text: 'hello' },
@@ -339,6 +343,23 @@ describe('Inbox ingest parsing, printing, query decoding, validation, and dedupl
     if (!badQuery.ok) {
       expect(badQuery.error.field).toBe('encoding');
       expect(badQuery.error.reason).toBe('malformed');
+    }
+
+    // Explicitly verify Object.prototype keys are rejected as unrecognized-source
+    for (const protoKey of ['constructor', '__proto__', 'toString', 'valueOf']) {
+      const fromObj = parseIngest({ source: protoKey, text: 'hello' });
+      expect(fromObj.ok).toBe(false);
+      if (!fromObj.ok) {
+        expect(fromObj.error.field).toBe('source');
+        expect(fromObj.error.reason).toBe('unrecognized-source');
+      }
+
+      const fromQuery = parseIngestQuery(`source=${protoKey}&text=hello`);
+      expect(fromQuery.ok).toBe(false);
+      if (!fromQuery.ok) {
+        expect(fromQuery.error.field).toBe('source');
+        expect(fromQuery.error.reason).toBe('unrecognized-source');
+      }
     }
   });
 

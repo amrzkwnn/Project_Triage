@@ -10,9 +10,9 @@ const TIME_CANDIDATE_PATTERN = /(?<!\d:)(?<!\d)(\d{2}:\d{2})(?!\d)/g;
 const LINK_PATTERN = /https?:\/\/\S+/i;
 
 const LOCATION_LABEL_PATTERN = /\bLocation:\s*([^\n.,;!?]{1,100})/i;
-const ROOM_PATTERN = /\b(Room\s+[A-Za-z0-9][A-Za-z0-9\s-]{0,40})/i;
+const ROOM_PATTERN = /\b(Room\s+[A-Za-z0-9][A-Za-z0-9 \t-]{0,40})/i;
 const AT_LOCATION_PATTERN =
-  /\bat\s+(?!\d{1,2}(?::\d{2}|\s*(?:am|pm)\b))([A-Za-z][A-Za-z0-9'& -]{1,80})/i;
+  /\bat\s+(?!https?:\/\/|\d{1,2}(?::\d{2}|\s*(?:am|pm)\b))([A-Za-z][A-Za-z0-9'& -]{1,80})/i;
 
 function extractLocation(text: string): string | undefined {
   const labeled = LOCATION_LABEL_PATTERN.exec(text);

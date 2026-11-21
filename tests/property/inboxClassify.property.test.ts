@@ -409,6 +409,15 @@ describe('Inbox classification, ordering, clarity summary, and event detection',
       ),
       { numRuns: 100 }
     );
+
+    // Unrecognized / Object.prototype-key sources fall back cleanly to 'From Message'
+    for (const badSource of ['constructor', '__proto__', 'toString', 'valueOf']) {
+      const summary = buildClaritySummary({
+        source: badSource,
+        text: 'Hello there',
+      });
+      expect(summary.fromApp).toBe('From Message');
+    }
   });
 
   // Feature: senior-digital-companion, Property 26: Event detection and action visibility
