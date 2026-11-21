@@ -29,7 +29,7 @@ const NO_EVENTS_MESSAGE =
   'No dates or events were found in this photo. Please try another photo or add the event by hand.';
 
 const DATE_PATTERN = /(?<!\d)(\d{4})[-/](\d{2})[-/](\d{2})(?!\d)/g;
-const TIME_24H_PATTERN = /(?<!\d:)(?<!\d)(\d{2}:\d{2})(?!\d)/g;
+const TIME_24H_PATTERN = /(?<!\d:)(?<!\d)(\d{2}:\d{2})(?::[0-5]\d)?(?!\d)/g;
 const TIME_12H_PATTERN = /\b(1[0-2]|0?[1-9])(?::([0-5]\d))?\s*(am|pm)\b/gi;
 
 const MEDICAL_PATTERN =

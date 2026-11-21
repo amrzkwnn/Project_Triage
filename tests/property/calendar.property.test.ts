@@ -101,12 +101,30 @@ const titleArb = fc
   .filter((s) => s.length > 0);
 
 const createdAtArb = fc
-  .integer({ min: 0, max: 1_000_000 })
-  .map((sec) =>
-    Temporal.Instant.fromEpochMilliseconds(
-      1_700_000_000_000 + sec * 1000
-    ).toString()
-  );
+  .tuple(
+    fc.integer({ min: 0, max: 1_000_000 }),
+    fc.constantFrom(0, 1, 50, 500, 999),
+    fc.boolean()
+  )
+  .map(([sec, ms, useDateIso]) => {
+    const epochMs = 1_700_000_000_000 + sec * 1000 + ms;
+    return useDateIso
+      ? new Date(epochMs).toISOString()
+      : Temporal.Instant.fromEpochMilliseconds(epochMs).toString();
+  });
+
+function compareIsoInstants(a: string, b: string): number {
+  try {
+    return Temporal.Instant.compare(
+      Temporal.Instant.from(a),
+      Temporal.Instant.from(b)
+    );
+  } catch {
+    if (a < b) return -1;
+    if (a > b) return 1;
+    return 0;
+  }
+}
 
 function expectedFormattedTime(
   timeStr: string | undefined,
@@ -130,7 +148,12 @@ function isSortedByTimeAndCreatedAt(events: readonly CalendarEvent[]): boolean {
     const prevTime = prev.time ?? '23:59';
     const currTime = curr.time ?? '23:59';
     if (prevTime > currTime) return false;
-    if (prevTime === currTime && prev.createdAt > curr.createdAt) return false;
+    if (
+      prevTime === currTime &&
+      compareIsoInstants(prev.createdAt, curr.createdAt) > 0
+    ) {
+      return false;
+    }
   }
   return true;
 }
@@ -748,5 +771,103 @@ describe('Calendar views, categories, snap review, duplicates & reminders', () =
     expect(scheduler.has(event.id)).toBe(false);
     expect(scheduler.size).toBe(0);
     expect(scheduler.getCancelled()).toHaveLength(1);
+  });
+
+  it('orders tied-time events chronologically across mixed whole-second and sub-second createdAt instants and handles edited dates/HH:mm:ss OCR', () => {
+    const today = Temporal.PlainDate.from('2026-11-21');
+    const tiedEvents: CalendarEvent[] = [
+      {
+        id: 'later-ms',
+        title: 'Second event',
+        date: '2026-11-21',
+        time: '10:00',
+        category: 'Medical',
+        createdAt: '2026-11-21T10:00:00.001Z',
+      },
+      {
+        id: 'earlier-whole',
+        title: 'First event',
+        date: '2026-11-21',
+        time: '10:00',
+        category: 'Medical',
+        createdAt: '2026-11-21T10:00:00Z',
+      },
+      {
+        id: 'offset-earlier',
+        title: 'Earliest via offset',
+        date: '2026-11-21',
+        time: '10:00',
+        category: 'Medical',
+        createdAt: '2026-11-21T17:59:59+08:00',
+      },
+    ];
+
+    expect(viewToday(tiedEvents, today).map((e) => e.id)).toEqual([
+      'offset-earlier',
+      'earlier-whole',
+      'later-ms',
+    ]);
+
+    const weekDay = viewWeek(tiedEvents, today)[0];
+    expect(weekDay.events.map((e) => e.id)).toEqual([
+      'offset-earlier',
+      'earlier-whole',
+      'later-ms',
+    ]);
+
+    const monthDay = viewMonth(tiedEvents, today.toPlainYearMonth())[0];
+    expect(monthDay.events.map((e) => e.id)).toEqual([
+      'offset-earlier',
+      'earlier-whole',
+      'later-ms',
+    ]);
+
+    // snap.ts emits fixed 3-digit millisecond ISO strings (.sssZ)
+    const reviewed = reviewCandidates({
+      existing: [],
+      pageConfidence: 0.9,
+      candidates: [
+        {
+          id: 'low-edit-valid',
+          title: 'Edited clinic visit',
+          date: '2026-11-21',
+          category: 'Medical',
+          confidence: 0.4,
+        },
+        {
+          id: 'low-edit-invalid',
+          title: 'Bad edited date',
+          date: '2026-11-21',
+          category: 'Medical',
+          confidence: 0.4,
+        },
+      ],
+      decisions: [
+        {
+          candidateId: 'low-edit-valid',
+          decision: 'keep',
+          confirmedDate: '2026-11-25',
+        },
+        {
+          candidateId: 'low-edit-invalid',
+          decision: 'keep',
+          confirmedDate: '2026-02-30',
+        },
+      ],
+    });
+    expect(reviewed.events).toHaveLength(1);
+    expect(reviewed.events[0].date).toBe('2026-11-25');
+    expect(reviewed.events[0].createdAt).toMatch(/\.\d{3}Z$/);
+
+    // OCR strips full HH:mm:ss cleanly without leaving ':00' in title
+    const withSeconds = extractCalendarCandidatesFromText(
+      '2026-11-21 09:30:00 Eye checkup',
+      0.9
+    );
+    expect(withSeconds.ok).toBe(true);
+    if (withSeconds.ok) {
+      expect(withSeconds.value[0].time).toBe('09:30');
+      expect(withSeconds.value[0].title).toBe('Eye checkup');
+    }
   });
 });

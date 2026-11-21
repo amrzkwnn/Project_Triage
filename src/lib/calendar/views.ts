@@ -17,16 +17,26 @@ export type MonthDayGroup = {
 
 const ALL_DAY_SORT_TIME = '23:59';
 
+function compareCreatedAt(a: string, b: string): number {
+  try {
+    return Temporal.Instant.compare(
+      Temporal.Instant.from(a),
+      Temporal.Instant.from(b)
+    );
+  } catch {
+    if (a < b) return -1;
+    if (a > b) return 1;
+    return 0;
+  }
+}
+
 function compareCalendarEvents(a: CalendarEvent, b: CalendarEvent): number {
   const timeA = a.time ?? ALL_DAY_SORT_TIME;
   const timeB = b.time ?? ALL_DAY_SORT_TIME;
   if (timeA < timeB) return -1;
   if (timeA > timeB) return 1;
 
-  if (a.createdAt < b.createdAt) return -1;
-  if (a.createdAt > b.createdAt) return 1;
-
-  return 0;
+  return compareCreatedAt(a.createdAt, b.createdAt);
 }
 
 export function renderEventDateAndTime(

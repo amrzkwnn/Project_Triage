@@ -148,9 +148,7 @@ export function reviewCandidates(
       date: effectiveDate,
       ...(validTime !== undefined ? { time: validTime } : {}),
       category: candidate.category,
-      createdAt: Temporal.Instant.fromEpochMilliseconds(
-        baseEpochMs + addedCount
-      ).toString(),
+      createdAt: new Date(baseEpochMs + addedCount).toISOString(),
     };
 
     resultEvents.push(newEvent);
