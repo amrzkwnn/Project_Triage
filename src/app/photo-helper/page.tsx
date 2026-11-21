@@ -247,14 +247,14 @@ export function PhotoHelperPage({
   }));
 
   return (
-    <div className="space-y-8">
+    <div className="space-y-7 pb-6">
       <BackToHome onClick={handleBack} />
 
       <section className="space-y-2">
-        <h1 className="text-[28px] font-bold leading-tight text-[#111827]">
+        <h1 className="text-[28px] font-bold leading-tight tracking-tight text-ink">
           Photo Helper
         </h1>
-        <p className="text-[20px] leading-relaxed text-[#111827]">
+        <p className="text-[18px] leading-relaxed text-muted">
           Improve family photos with one simple tap. Your original photo is
           always kept unchanged.
         </p>
@@ -266,26 +266,26 @@ export function PhotoHelperPage({
         <section
           aria-labelledby="photo-access-off-heading"
           data-card="true"
-          className="rounded-2xl border-2 border-[#D97706] bg-[#FFFBEB] p-5 space-y-4"
+          className="rounded-card border-2 border-[#D97706] bg-gradient-to-br from-amber-50 via-white to-amber-50/40 p-5 shadow-card anim-fade-up space-y-4"
         >
           <div className="flex flex-wrap items-center gap-3">
             <span
               data-badge="true"
-              className="inline-flex items-center gap-2 rounded-lg border-2 border-[#D97706] bg-white px-3 py-1.5 text-[18px] font-bold text-[#92400E]"
+              className="inline-flex items-center gap-2 rounded-full border-2 border-[#D97706] bg-white px-3.5 py-1.5 text-[16px] font-bold text-[#92400E] shadow-pill"
             >
               <span aria-hidden="true" className="inline-flex shrink-0">
-                <Lock size={20} />
+                <Lock size={18} />
               </span>
               <span>Photo Access is OFF</span>
             </span>
           </div>
           <h2
             id="photo-access-off-heading"
-            className="text-[22px] font-bold text-[#111827]"
+            className="text-[22px] font-bold text-ink"
           >
             Turn on Photo access to pick a photo
           </h2>
-          <p className="text-[18px] text-[#111827]">
+          <p className="text-[18px] text-ink">
             You are in control. Turn on Photos here or in My Data whenever you
             want to touch up a picture.
           </p>
@@ -317,25 +317,33 @@ export function PhotoHelperPage({
         <section
           aria-labelledby="photo-editor-heading"
           data-card="true"
-          className="rounded-2xl border-2 border-[#111827] bg-white p-5 space-y-5"
+          className="rounded-card border border-line bg-white p-5 shadow-card anim-fade-up space-y-5"
         >
           <h2
             id="photo-editor-heading"
-            className="text-[24px] font-bold text-[#111827]"
+            className="text-[22px] font-bold tracking-tight text-ink"
           >
             Pick a Photo and Choose One Easy Fix
           </h2>
 
-          <div className="space-y-2">
-            <label
-              htmlFor="photo-helper-file-input"
-              className="inline-flex min-h-[56px] cursor-pointer items-center gap-3 rounded-xl border-2 border-[#0F766E] bg-[#F0FDFA] px-5 py-3 text-[18px] font-semibold text-[#115E59]"
+          <div className="rounded-card border-2 border-dashed border-brand-soft bg-white/70 p-5 text-center space-y-3">
+            <span
+              aria-hidden="true"
+              className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-brand-wash text-brand"
             >
-              <span aria-hidden="true" className="inline-flex shrink-0">
-                <ImageIcon size={22} />
-              </span>
-              <span>Choose a Photo from Your Device</span>
-            </label>
+              <ImageIcon size={22} />
+            </span>
+            <div>
+              <label
+                htmlFor="photo-helper-file-input"
+                className="pressable inline-flex min-h-[56px] cursor-pointer items-center justify-center gap-3 rounded-full border-2 border-brand bg-brand px-5 py-3 text-[18px] font-semibold text-white shadow-pill transition-colors hover:bg-brand-deep"
+              >
+                <span aria-hidden="true" className="inline-flex shrink-0">
+                  <ImageIcon size={20} />
+                </span>
+                <span>Choose a Photo from Your Device</span>
+              </label>
+            </div>
             <input
               id="photo-helper-file-input"
               type="file"
@@ -344,7 +352,7 @@ export function PhotoHelperPage({
               className="sr-only"
             />
             {photoName ? (
-              <p className="text-[18px] font-semibold text-[#111827]">
+              <p className="text-[18px] font-semibold text-brand-deep">
                 Selected photo: {photoName}
               </p>
             ) : null}
@@ -367,7 +375,7 @@ export function PhotoHelperPage({
           {photoError ? (
             <div
               role="alert"
-              className="rounded-xl border-2 border-[#BE123C] bg-[#FFF1F2] p-4 space-y-3"
+              className="rounded-card border-2 border-[#BE123C] bg-gradient-to-br from-red-50/90 via-white to-red-50/40 p-4 shadow-card space-y-3"
             >
               <p className="flex items-start gap-2 text-[18px] font-semibold text-[#881337]">
                 <span aria-hidden="true" className="mt-0.5 inline-flex shrink-0">
@@ -398,32 +406,32 @@ export function PhotoHelperPage({
 
           {/* Before / After Preview */}
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-            <div className="rounded-xl border-2 border-[#111827] bg-[#FAF9F6] p-4 space-y-2">
-              <p className="text-[20px] font-bold text-[#111827]">Before</p>
+            <div className="rounded-card border border-line bg-canvas p-4 shadow-card space-y-2">
+              <p className="text-[20px] font-bold text-ink">Before</p>
               {originalPreviewUrl ? (
                 <img
                   src={originalPreviewUrl}
                   alt="Original photo preview"
-                  className="max-h-60 w-full rounded-lg border-2 border-[#111827] bg-white object-contain"
+                  className="max-h-60 w-full rounded-chip border border-line bg-white object-contain"
                 />
               ) : null}
-              <p className="text-[18px] text-[#111827]">
+              <p className="text-[18px] text-muted">
                 {photoName
                   ? `Original photo (${photoName}) stays untouched.`
                   : 'Choose a photo to see your original picture here.'}
               </p>
             </div>
-            <div className="rounded-xl border-2 border-[#0F766E] bg-[#F0FDFA] p-4 space-y-2">
-              <p className="text-[20px] font-bold text-[#115E59]">After</p>
+            <div className="rounded-card border border-brand-soft bg-brand-wash/70 p-4 shadow-card space-y-2">
+              <p className="text-[20px] font-bold text-brand-deep">After</p>
               {editedPreviewUrl && activePreset ? (
                 <img
                   src={editedPreviewUrl}
                   alt="Improved photo preview"
                   style={{ filter: getPresetPreviewFilter(activePreset) }}
-                  className="max-h-60 w-full rounded-lg border-2 border-[#0F766E] bg-white object-contain"
+                  className="max-h-60 w-full rounded-chip border border-brand-soft bg-white object-contain"
                 />
               ) : null}
-              <p className="text-[18px] text-[#111827]">
+              <p className="text-[18px] text-ink">
                 {activePreset && editedBytes
                   ? `Preview ready with "${activePreset}" (${editedBytes.length} bytes).`
                   : 'Tap one of the 4 buttons above to preview your photo.'}
@@ -452,7 +460,7 @@ export function PhotoHelperPage({
           {savedFileName ? (
             <p
               role="status"
-              className="rounded-xl border-2 border-[#15803D] bg-[#F0FDF4] p-4 text-[18px] font-semibold text-[#14532D]"
+              className="rounded-card border-2 border-[#15803D] bg-[#F0FDF4] p-4 text-[18px] font-semibold text-[#14532D] shadow-card"
             >
               Saved new copy as {savedFileName}. Your original photo was not
               changed.
@@ -465,7 +473,7 @@ export function PhotoHelperPage({
       <section aria-labelledby="scan-tip-heading" className="space-y-4">
         <h2
           id="scan-tip-heading"
-          className="text-[24px] font-bold text-[#111827]"
+          className="text-[22px] font-bold tracking-tight text-ink"
         >
           Old Print Scan Tip
         </h2>

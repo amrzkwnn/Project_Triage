@@ -7,15 +7,19 @@ import {
   Camera,
   Check,
   Eye,
+  Inbox,
   Mail,
   Plus,
   ScanEye,
   ShieldAlert,
   Smartphone,
+  Sparkles,
   Users,
   X,
 } from 'lucide-react';
 import { BackToHome } from '@/components/BackToHome';
+import { EmptyState } from '@/components/EmptyState';
+import { FilterChips, type FilterChipItem } from '@/components/FilterChips';
 import { PriorityPill } from '@/components/PriorityPill';
 import { SeniorButton } from '@/components/SeniorButton';
 import { SourceBadge } from '@/components/SourceBadge';
@@ -76,21 +80,35 @@ const GROUP_TABS: readonly InboxFilterTab[] = [
   'Promotion',
 ] as const;
 
+const GROUP_TAB_DOTS: Partial<Record<InboxFilterTab, string>> = {
+  Personal: 'bg-teal-500',
+  Family: 'bg-violet-500',
+  Others: 'bg-amber-500',
+  Promotion: 'bg-slate-400',
+};
+
+const GROUP_CHIP_ITEMS: ReadonlyArray<FilterChipItem<InboxFilterTab>> =
+  GROUP_TABS.map((tab) => ({
+    id: tab,
+    label: tab,
+    ...(GROUP_TAB_DOTS[tab] ? { dot: GROUP_TAB_DOTS[tab] } : {}),
+  }));
+
 const APPLE_SHORTCUT_STEPS = [
   {
     id: 'shortcut-step-1',
     title: 'Open the Shortcuts app on your iPhone',
     content: (
       <div className="space-y-3">
-        <div className="flex items-center gap-3 rounded-xl border-2 border-[#0F766E] bg-[#F0FDFA] p-4">
-          <span aria-hidden="true" className="inline-flex shrink-0 text-[#0F766E]">
-            <Smartphone size={28} />
+        <div className="flex items-center gap-3 rounded-card border border-brand-soft bg-brand-wash p-4">
+          <span aria-hidden="true" className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-white text-brand shadow-card">
+            <Smartphone size={22} />
           </span>
-          <span className="text-[18px] font-semibold text-[#115E59]">
+          <span className="text-[18px] font-semibold text-brand-deep">
             Visual Guide 1: Tap the blue and pink Shortcuts icon on your Home Screen.
           </span>
         </div>
-        <p className="text-[18px] text-[#111827]">
+        <p className="text-[18px] text-ink">
           Tap the plus button at the top right to create a new helper shortcut.
         </p>
       </div>
@@ -101,15 +119,15 @@ const APPLE_SHORTCUT_STEPS = [
     title: 'Add Share Sheet support for text and photos',
     content: (
       <div className="space-y-3">
-        <div className="flex items-center gap-3 rounded-xl border-2 border-[#0F766E] bg-[#F0FDFA] p-4">
-          <span aria-hidden="true" className="inline-flex shrink-0 text-[#0F766E]">
-            <Mail size={28} />
+        <div className="flex items-center gap-3 rounded-card border border-brand-soft bg-brand-wash p-4">
+          <span aria-hidden="true" className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-white text-brand shadow-card">
+            <Mail size={22} />
           </span>
-          <span className="text-[18px] font-semibold text-[#115E59]">
+          <span className="text-[18px] font-semibold text-brand-deep">
             Visual Guide 2: Turn on Show in Share Sheet for Text and Images.
           </span>
         </div>
-        <p className="text-[18px] text-[#111827]">
+        <p className="text-[18px] text-ink">
           This lets you forward any WhatsApp, SMS, or Messenger note to My Daily
           Helper with two taps.
         </p>
@@ -121,15 +139,15 @@ const APPLE_SHORTCUT_STEPS = [
     title: 'Open My Daily Helper with the shared message',
     content: (
       <div className="space-y-3">
-        <div className="flex items-center gap-3 rounded-xl border-2 border-[#0F766E] bg-[#F0FDFA] p-4">
-          <span aria-hidden="true" className="inline-flex shrink-0 text-[#0F766E]">
-            <Check size={28} />
+        <div className="flex items-center gap-3 rounded-card border border-brand-soft bg-brand-wash p-4">
+          <span aria-hidden="true" className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-white text-brand shadow-card">
+            <Check size={22} />
           </span>
-          <span className="text-[18px] font-semibold text-[#115E59]">
+          <span className="text-[18px] font-semibold text-brand-deep">
             Visual Guide 3: Choose Open Web Address pointing to your Inbox.
           </span>
         </div>
-        <p className="text-[18px] text-[#111827]">
+        <p className="text-[18px] text-ink">
           Whenever you share a message, My Daily Helper shows a preview so you
           can confirm before saving it.
         </p>
@@ -695,14 +713,14 @@ export function UnifiedInboxPage({
   };
 
   return (
-    <div className="space-y-8">
+    <div className="space-y-7 pb-6">
       <BackToHome onClick={handleBack} />
 
       <section className="space-y-3">
-        <h1 className="text-[28px] font-bold leading-tight text-[#111827]">
+        <h1 className="text-[28px] font-bold leading-tight tracking-tight text-ink">
           Unified Inbox
         </h1>
-        <p className="text-[20px] leading-relaxed text-[#111827]">
+        <p className="text-[18px] leading-relaxed text-muted">
           All your chosen messages and prescription photos in one calm list with
           clear summaries.
         </p>
@@ -727,7 +745,7 @@ export function UnifiedInboxPage({
         <div
           role="alert"
           data-card="true"
-          className="rounded-2xl border-2 border-[#D97706] bg-[#FFFBEB] p-5 space-y-3"
+          className="rounded-card border-2 border-[#D97706] bg-gradient-to-br from-amber-50 via-white to-amber-50/40 p-5 shadow-card space-y-3"
         >
           <p className="flex items-start gap-2 text-[18px] font-semibold text-[#92400E]">
             <span aria-hidden="true" className="mt-0.5 inline-flex shrink-0">
@@ -757,7 +775,7 @@ export function UnifiedInboxPage({
         <div
           role="alert"
           data-card="true"
-          className="rounded-2xl border-2 border-[#BE123C] bg-[#FFF1F2] p-5 space-y-2"
+          className="rounded-card border-2 border-[#BE123C] bg-gradient-to-br from-red-50/90 via-white to-red-50/40 p-5 shadow-card space-y-2"
         >
           <p className="flex items-start gap-2 text-[18px] font-semibold text-[#881337]">
             <span aria-hidden="true" className="mt-0.5 inline-flex shrink-0">
@@ -765,7 +783,7 @@ export function UnifiedInboxPage({
             </span>
             <span>{queryError}</span>
           </p>
-          <p className="text-[18px] text-[#111827]">
+          <p className="text-[18px] text-ink">
             You can still use the &ldquo;+ Paste Message or Pick Photo&rdquo;
             button above.
           </p>
@@ -776,12 +794,12 @@ export function UnifiedInboxPage({
         <section
           aria-label="Shared message preview"
           data-card="true"
-          className="rounded-2xl border-2 border-[#0F766E] bg-[#F0FDFA] p-5 space-y-4"
+          className="rounded-card border-2 border-brand-soft bg-brand-wash p-5 shadow-card space-y-4"
         >
-          <h2 className="text-[22px] font-bold text-[#115E59]">
+          <h2 className="text-[22px] font-bold text-brand-deep">
             Add This Shared Message?
           </h2>
-          <p className="text-[20px] leading-relaxed text-[#111827] whitespace-pre-wrap">
+          <p className="text-[20px] leading-relaxed text-ink whitespace-pre-wrap">
             {pendingQueryDraft.text}
           </p>
           <div className="flex flex-wrap gap-4">
@@ -810,7 +828,7 @@ export function UnifiedInboxPage({
         <div
           role="alert"
           data-card="true"
-          className="rounded-2xl border-2 border-[#BE123C] bg-[#FFF1F2] p-4 space-y-3 text-[18px] font-semibold text-[#881337]"
+          className="rounded-card border-2 border-[#BE123C] bg-gradient-to-br from-red-50/90 via-white to-red-50/40 p-4 shadow-card space-y-3 text-[18px] font-semibold text-[#881337]"
         >
           <p>{actionError}</p>
           {channelOffChannel ? (
@@ -846,9 +864,9 @@ export function UnifiedInboxPage({
         <section
           aria-label="Paste message or pick prescription photo"
           data-card="true"
-          className="rounded-2xl border-2 border-[#111827] bg-white p-5 space-y-5"
+          className="rounded-card border border-line bg-white p-5 shadow-card anim-fade-up space-y-5"
         >
-          <h2 className="text-[22px] font-bold text-[#111827]">
+          <h2 className="text-[22px] font-bold tracking-tight text-ink">
             Paste a Message
           </h2>
           <form
@@ -858,7 +876,7 @@ export function UnifiedInboxPage({
             <div className="space-y-2">
               <label
                 htmlFor="inbox-source-select"
-                className="block text-[18px] font-semibold text-[#111827]"
+                className="block text-[18px] font-semibold text-ink"
               >
                 Where did this message come from?
               </label>
@@ -866,7 +884,7 @@ export function UnifiedInboxPage({
                 id="inbox-source-select"
                 value={pasteSource}
                 onChange={(e) => setPasteSource(e.target.value as Channel)}
-                className="min-h-[56px] w-full rounded-xl border-2 border-[#111827] bg-[#FAF9F6] px-4 text-[18px] text-[#111827]"
+                className="min-h-[56px] w-full rounded-chip border-2 border-line bg-canvas px-4 text-[18px] text-ink focus:border-brand"
               >
                 <option value="smsPaste">SMS</option>
                 <option value="whatsappForward">WhatsApp</option>
@@ -878,7 +896,7 @@ export function UnifiedInboxPage({
             <div className="space-y-2">
               <label
                 htmlFor="inbox-sender-input"
-                className="block text-[18px] font-semibold text-[#111827]"
+                className="block text-[18px] font-semibold text-ink"
               >
                 Who sent it? (optional)
               </label>
@@ -888,14 +906,14 @@ export function UnifiedInboxPage({
                 value={pasteSender}
                 onChange={(e) => setPasteSender(e.target.value)}
                 placeholder="For example: City Clinic or Mei Ling"
-                className="min-h-[56px] w-full rounded-xl border-2 border-[#111827] bg-[#FAF9F6] px-4 text-[18px] text-[#111827]"
+                className="min-h-[56px] w-full rounded-chip border-2 border-line bg-canvas px-4 text-[18px] text-ink focus:border-brand"
               />
             </div>
 
             <div className="space-y-2">
               <label
                 htmlFor="inbox-paste-textarea"
-                className="block text-[18px] font-semibold text-[#111827]"
+                className="block text-[18px] font-semibold text-ink"
               >
                 Message text
               </label>
@@ -904,7 +922,7 @@ export function UnifiedInboxPage({
                 rows={4}
                 value={pasteText}
                 onChange={(e) => setPasteText(e.target.value)}
-                className="w-full rounded-xl border-2 border-[#111827] bg-[#FAF9F6] p-4 text-[18px] text-[#111827]"
+                className="w-full rounded-chip border-2 border-line bg-canvas p-4 text-[18px] text-ink focus:border-brand"
               />
             </div>
 
@@ -926,15 +944,15 @@ export function UnifiedInboxPage({
             </div>
           </form>
 
-          <hr className="border-t-2 border-[#E5E7EB]" />
+          <hr className="border-t border-line" />
 
           <div className="space-y-3">
-            <h3 className="text-[20px] font-bold text-[#111827]">
+            <h3 className="text-[20px] font-bold text-ink">
               Or Snap a Prescription Photo
             </h3>
             <label
               htmlFor="rx-notes-input"
-              className="block text-[18px] font-semibold text-[#111827]"
+              className="block text-[18px] font-semibold text-ink"
             >
               Optional text read from medicine label
             </label>
@@ -944,61 +962,66 @@ export function UnifiedInboxPage({
               value={rxText}
               onChange={(e) => setRxText(e.target.value)}
               placeholder="For example: Blood pressure pill 2026-07-16 08:00"
-              className="min-h-[56px] w-full rounded-xl border-2 border-[#111827] bg-[#FAF9F6] px-4 text-[18px] text-[#111827]"
+              className="min-h-[56px] w-full rounded-chip border-2 border-line bg-canvas px-4 text-[18px] text-ink focus:border-brand"
             />
-            <label
-              htmlFor="rx-photo-input"
-              className="inline-flex min-h-[56px] cursor-pointer items-center gap-3 rounded-xl border-2 border-[#0F766E] bg-[#F0FDFA] px-5 py-3 text-[18px] font-semibold text-[#115E59]"
-            >
-              <span aria-hidden="true" className="inline-flex shrink-0">
+            <div className="rounded-card border-2 border-dashed border-brand-soft bg-white/70 p-4 text-center space-y-3">
+              <span
+                aria-hidden="true"
+                className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-brand-wash text-brand"
+              >
                 <Camera size={22} />
               </span>
-              <span>Pick Prescription Photo</span>
-            </label>
-            <input
-              id="rx-photo-input"
-              type="file"
-              accept="image/*"
-              onChange={(e) => void handlePrescriptionPhotoPick(e)}
-              className="sr-only"
-            />
+              <div>
+                <label
+                  htmlFor="rx-photo-input"
+                  className="pressable inline-flex min-h-[56px] cursor-pointer items-center justify-center gap-3 rounded-full border-2 border-brand bg-brand px-5 py-3 text-[18px] font-semibold text-white shadow-pill transition-colors hover:bg-brand-deep"
+                >
+                  <span aria-hidden="true" className="inline-flex shrink-0">
+                    <Camera size={20} />
+                  </span>
+                  <span>Pick Prescription Photo</span>
+                </label>
+              </div>
+              <input
+                id="rx-photo-input"
+                type="file"
+                accept="image/*"
+                onChange={(e) => void handlePrescriptionPhotoPick(e)}
+                className="sr-only"
+              />
+            </div>
           </div>
         </section>
       ) : null}
 
-      {/* Group Tabs + Promotion Filter */}
-      <nav aria-label="Inbox groups" className="flex flex-wrap gap-3">
-        {GROUP_TABS.map((tab) => {
-          const selected = activeTab === tab;
-          return (
-            <SeniorButton
-              key={tab}
-              variant={selected ? 'primary' : 'secondary'}
-              aria-pressed={selected}
-              onClick={() => setActiveTab(tab)}
-            >
-              {tab}
-            </SeniorButton>
-          );
-        })}
+      {/* Sticky Frosted Group Filter Bar */}
+      <nav
+        aria-label="Inbox groups"
+        className="sticky top-0 z-20 -mx-5 bg-canvas/95 px-5 py-3 backdrop-blur-md"
+      >
+        <FilterChips
+          items={GROUP_CHIP_ITEMS}
+          value={activeTab}
+          onChange={setActiveTab}
+          ariaLabel="Message groups"
+        />
       </nav>
 
       {/* Inbox List */}
       <section aria-labelledby="inbox-list-heading" className="space-y-4">
         <h2
           id="inbox-list-heading"
-          className="text-[24px] font-bold text-[#111827]"
+          className="text-[22px] font-bold tracking-tight text-ink tnum"
         >
           {activeTab} Messages ({visibleItems.length})
         </h2>
 
         {visibleItems.length === 0 ? (
-          <div
-            data-card="true"
-            className="rounded-2xl border-2 border-[#111827] bg-white p-5 text-[20px] font-semibold text-[#111827]"
-          >
-            No messages in {activeTab} yet.
-          </div>
+          <EmptyState
+            icon={<Inbox size={24} />}
+            title={`No messages in ${activeTab} yet.`}
+            message="Messages and prescription photos you add will appear here with clear summaries."
+          />
         ) : (
           <div className="space-y-4">
             {visibleItems.map((item) => {
@@ -1012,7 +1035,7 @@ export function UnifiedInboxPage({
                 <article
                   key={item.id}
                   data-card="true"
-                  className="rounded-2xl border-2 border-[#111827] bg-white p-5 space-y-4"
+                  className="rounded-card border border-line bg-white p-5 shadow-card anim-fade-up space-y-4"
                 >
                   <div className="flex flex-wrap items-center gap-3">
                     <SourceBadge source={item.source} />
@@ -1021,15 +1044,15 @@ export function UnifiedInboxPage({
 
                   {/* Prescription original photo preview above extracted text */}
                   {isPhotoItem ? (
-                    <div className="rounded-xl border-2 border-[#0F766E] bg-[#FAF9F6] p-4 space-y-2">
-                      <p className="text-[18px] font-bold text-[#115E59]">
+                    <div className="rounded-card border border-brand-soft bg-canvas p-4 space-y-2">
+                      <p className="text-[18px] font-bold text-brand-deep">
                         Original Photo: {item.attachments[0].name}
                       </p>
                       {item.attachments[0].dataBase64 ? (
                         <img
                           src={`data:${item.attachments[0].mime};base64,${item.attachments[0].dataBase64}`}
                           alt={`Original photo ${item.attachments[0].name}`}
-                          className="max-h-48 rounded-lg border-2 border-[#111827] object-contain"
+                          className="max-h-48 rounded-chip border border-line bg-white object-contain"
                         />
                       ) : null}
                       {isLowConfidenceRx ? (
@@ -1050,18 +1073,31 @@ export function UnifiedInboxPage({
                     </div>
                   ) : null}
 
-                  <div className="space-y-1">
-                    <p className="text-[18px] font-bold text-[#115E59]">
-                      {item.summary?.whoSent ?? item.sender ?? 'Unknown sender'}
-                    </p>
-                    <p className="text-[20px] leading-relaxed text-[#111827]">
-                      {item.summary?.text ?? item.text}
-                    </p>
-                    {item.summary?.actionNeeded ? (
-                      <p className="text-[18px] font-semibold text-[#111827]">
-                        Next step: {item.summary.actionNeeded}
+                  {/* Syed RecordDetail AI Summary Gradient Card */}
+                  <div className="relative overflow-hidden rounded-card border border-brand-soft/70 bg-gradient-to-br from-brand-soft/80 via-brand-wash to-white p-4 shadow-card">
+                    <div
+                      aria-hidden="true"
+                      className="pointer-events-none absolute -right-10 -top-12 h-32 w-32 rounded-full bg-brand-soft/50 blur-2xl"
+                    />
+                    <div className="relative space-y-1.5">
+                      <p className="flex items-center gap-1.5 text-[12px] font-bold uppercase tracking-[0.08em] text-brand-deep">
+                        <span aria-hidden="true" className="inline-flex shrink-0">
+                          <Sparkles size={14} strokeWidth={2.4} />
+                        </span>
+                        <span>AI summary</span>
                       </p>
-                    ) : null}
+                      <p className="text-[18px] font-bold text-brand-deep">
+                        {item.summary?.whoSent ?? item.sender ?? 'Unknown sender'}
+                      </p>
+                      <p className="text-[20px] leading-relaxed text-ink">
+                        {item.summary?.text ?? item.text}
+                      </p>
+                      {item.summary?.actionNeeded ? (
+                        <p className="text-[18px] font-semibold text-ink">
+                          Next step: {item.summary.actionNeeded}
+                        </p>
+                      ) : null}
+                    </div>
                   </div>
 
                   {/* Safe literal original message viewer (zero HTML execution) */}
@@ -1078,14 +1114,14 @@ export function UnifiedInboxPage({
                     </SeniorButton>
 
                     {showOriginal ? (
-                      <pre className="whitespace-pre-wrap break-words rounded-xl border-2 border-[#111827] bg-[#FAF9F6] p-4 font-sans text-[18px] text-[#111827]">
+                      <pre className="whitespace-pre-wrap break-words rounded-chip border border-line bg-canvas p-4 font-sans text-[18px] text-ink">
                         {item.text}
                       </pre>
                     ) : null}
                   </div>
 
                   {/* Forward-To Actions */}
-                  <div className="flex flex-wrap gap-3 pt-1">
+                  <div className="flex flex-wrap gap-3 border-t border-line/70 pt-3">
                     {actions.includes('forwardToCalendar') ? (
                       <SeniorButton
                         variant="primary"
@@ -1183,15 +1219,15 @@ export function UnifiedInboxPage({
                     <div
                       role="region"
                       aria-label="Confirm forward to calendar"
-                      className="rounded-xl border-2 border-[#0F766E] bg-[#F0FDFA] p-4 space-y-3"
+                      className="rounded-card border-2 border-brand-soft bg-brand-wash p-4 shadow-card space-y-3"
                     >
-                      <p className="text-[20px] font-bold text-[#115E59]">
+                      <p className="text-[20px] font-bold text-brand-deep">
                         Add to Calendar?
                       </p>
-                      <p className="text-[18px] font-semibold text-[#111827]">
+                      <p className="text-[18px] font-semibold text-ink">
                         {pendingCalendarForward.event.title}
                       </p>
-                      <p className="text-[18px] text-[#111827]">
+                      <p className="text-[18px] text-ink tnum">
                         Date: {pendingCalendarForward.event.date}
                         {pendingCalendarForward.event.time
                           ? ` • Time: ${pendingCalendarForward.event.time}`
@@ -1203,7 +1239,7 @@ export function UnifiedInboxPage({
                       {pendingCalendarForward.isDuplicate ? (
                         <p
                           role="alert"
-                          className="rounded-lg border-2 border-[#D97706] bg-[#FFFBEB] p-3 text-[18px] font-semibold text-[#92400E]"
+                          className="rounded-chip border-2 border-[#D97706] bg-amber-50 p-3 text-[18px] font-semibold text-[#92400E]"
                         >
                           A similar event already exists on{' '}
                           {pendingCalendarForward.event.date}. Confirm to add
@@ -1236,11 +1272,11 @@ export function UnifiedInboxPage({
                     <div
                       role="region"
                       aria-label="Confirm family summary share"
-                      className="rounded-xl border-2 border-[#0F766E] bg-[#F0FDFA] p-4 space-y-3"
+                      className="rounded-card border-2 border-brand-soft bg-brand-wash p-4 shadow-card space-y-3"
                     >
                       {canShowAskFamily(settings) ? (
                         <>
-                          <p className="text-[18px] font-semibold text-[#111827]">
+                          <p className="text-[18px] font-semibold text-ink">
                             Confirm sending a summary of this single item to
                             your family?
                           </p>
@@ -1264,7 +1300,7 @@ export function UnifiedInboxPage({
                         </>
                       ) : (
                         <>
-                          <p className="text-[18px] font-semibold text-[#111827]">
+                          <p className="text-[18px] font-semibold text-ink">
                             Family Sharing is currently OFF. Turn it on in My
                             Data first.
                           </p>
@@ -1297,7 +1333,7 @@ export function UnifiedInboxPage({
       <section aria-labelledby="shortcut-wizard-heading" className="space-y-4">
         <h2
           id="shortcut-wizard-heading"
-          className="text-[24px] font-bold text-[#111827]"
+          className="text-[22px] font-bold tracking-tight text-ink"
         >
           Easy Phone Shortcut Setup
         </h2>

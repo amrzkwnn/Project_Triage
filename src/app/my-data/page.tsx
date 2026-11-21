@@ -338,17 +338,23 @@ export function MyDataPage({
   };
 
   return (
-    <div className="space-y-8">
+    <div className="space-y-7 pb-6">
       <BackToHome onClick={handleBackClick} />
 
-      <section className="space-y-2">
-        <h1 className="text-[28px] font-bold leading-tight text-[#111827]">
-          My Data &amp; Privacy
-        </h1>
-        <p className="text-[20px] leading-relaxed text-[#111827]">
-          You choose what this helper can read, who you share with, and when to
-          download or erase your information.
-        </p>
+      <section className="relative overflow-hidden rounded-card border border-brand-soft/70 bg-gradient-to-br from-brand-soft via-brand-wash to-white p-5 shadow-lift anim-fade-up">
+        <div
+          aria-hidden="true"
+          className="pointer-events-none absolute -right-12 -top-16 h-40 w-40 rounded-full bg-brand-soft/60 blur-2xl"
+        />
+        <div className="relative space-y-2">
+          <h1 className="text-[28px] font-bold leading-tight tracking-tight text-ink">
+            My Data &amp; Privacy
+          </h1>
+          <p className="text-[18px] leading-relaxed text-ink">
+            You choose what this helper can read, who you share with, and when to
+            download or erase your information.
+          </p>
+        </div>
       </section>
 
       <StatusLive message={statusMessage} />
@@ -357,7 +363,7 @@ export function MyDataPage({
         <div
           role="alert"
           data-card="true"
-          className="flex items-start gap-3 rounded-2xl border-2 border-[#BE123C] bg-[#FFF1F2] p-4 text-[18px] font-semibold text-[#881337]"
+          className="flex items-start gap-3 rounded-card border-2 border-[#BE123C] bg-gradient-to-br from-red-50/90 via-white to-red-50/40 p-4 text-[18px] font-semibold text-[#881337] shadow-card"
         >
           <span aria-hidden="true" className="mt-0.5 inline-flex shrink-0">
             <AlertTriangle size={22} />
@@ -370,7 +376,7 @@ export function MyDataPage({
       <section aria-labelledby="channels-heading" className="space-y-4">
         <h2
           id="channels-heading"
-          className="text-[24px] font-bold text-[#111827]"
+          className="text-[22px] font-bold tracking-tight text-ink"
         >
           Message &amp; Photo Sources
         </h2>
@@ -384,13 +390,13 @@ export function MyDataPage({
               <div
                 key={channel}
                 data-card="true"
-                className="flex flex-wrap items-center justify-between gap-4 rounded-2xl border-2 border-[#111827] bg-white p-5"
+                className="flex flex-wrap items-center justify-between gap-4 rounded-card border border-line bg-white p-5 shadow-card anim-fade-up"
               >
                 <div className="space-y-1">
-                  <p className="text-[20px] font-bold text-[#111827]">
+                  <p className="text-[20px] font-bold text-ink">
                     {label}
                   </p>
-                  <p className="text-[18px] text-[#111827]">
+                  <p className="text-[18px] text-muted">
                     {CHANNEL_DESCRIPTIONS[channel]}
                   </p>
                 </div>
@@ -410,20 +416,20 @@ export function MyDataPage({
 
       {/* AI Reading Toggle */}
       <section aria-labelledby="ai-heading" className="space-y-4">
-        <h2 id="ai-heading" className="text-[24px] font-bold text-[#111827]">
+        <h2 id="ai-heading" className="text-[22px] font-bold tracking-tight text-ink">
           AI Reading
         </h2>
 
         <div
           data-card="true"
-          className="rounded-2xl border-2 border-[#111827] bg-white p-5 space-y-4"
+          className="rounded-card border border-line bg-white p-5 shadow-card anim-fade-up space-y-4"
         >
           <div className="flex flex-wrap items-center justify-between gap-4">
             <div className="space-y-1">
-              <p className="text-[20px] font-bold text-[#111827]">
+              <p className="text-[20px] font-bold text-ink">
                 Allow AI Reading
               </p>
-              <p className="text-[18px] text-[#111827]">
+              <p className="text-[18px] text-muted">
                 When OFF, this helper uses simple built-in checks on your device
                 only.
               </p>
@@ -443,9 +449,9 @@ export function MyDataPage({
             <div
               role="region"
               aria-label="Confirm AI Reading"
-              className="rounded-xl border-2 border-[#0F766E] bg-[#F0FDFA] p-4 space-y-4"
+              className="rounded-card border-2 border-brand-soft bg-brand-wash p-4 shadow-card space-y-4"
             >
-              <p className="text-[20px] leading-relaxed text-[#111827]">
+              <p className="text-[20px] leading-relaxed text-ink">
                 {AI_EXPLANATION_TEXT}
               </p>
               <div className="flex flex-wrap gap-4">
@@ -473,20 +479,20 @@ export function MyDataPage({
       <section aria-labelledby="caregiver-heading" className="space-y-4">
         <h2
           id="caregiver-heading"
-          className="text-[24px] font-bold text-[#111827]"
+          className="text-[22px] font-bold tracking-tight text-ink"
         >
           Family Sharing
         </h2>
 
         <div
           data-card="true"
-          className="flex flex-wrap items-center justify-between gap-4 rounded-2xl border-2 border-[#111827] bg-white p-5"
+          className="flex flex-wrap items-center justify-between gap-4 rounded-card border border-line bg-white p-5 shadow-card anim-fade-up"
         >
           <div className="space-y-1">
-            <p className="text-[20px] font-bold text-[#111827]">
+            <p className="text-[20px] font-bold text-ink">
               Allow Ask Family to Check
             </p>
-            <p className="text-[18px] text-[#111827]">
+            <p className="text-[18px] text-muted">
               When ON, you can choose to send a single item summary to a trusted
               family member after confirming.
             </p>
@@ -505,16 +511,16 @@ export function MyDataPage({
 
       {/* What AI Read Audit Log */}
       <section aria-labelledby="audit-heading" className="space-y-4">
-        <h2 id="audit-heading" className="text-[24px] font-bold text-[#111827]">
+        <h2 id="audit-heading" className="text-[22px] font-bold tracking-tight text-ink">
           What AI Read
         </h2>
 
         <div
           data-card="true"
-          className="rounded-2xl border-2 border-[#111827] bg-white p-5 space-y-4"
+          className="rounded-card border border-line bg-white p-5 shadow-card anim-fade-up space-y-4"
         >
           {orderedAudit.length === 0 ? (
-            <p className="text-[20px] font-medium text-[#111827]">
+            <p className="text-[20px] font-medium text-muted">
               {AUDIT_EMPTY_MESSAGE}
             </p>
           ) : (
@@ -522,24 +528,24 @@ export function MyDataPage({
               {orderedAudit.map((entry) => (
                 <li
                   key={entry.id}
-                  className="rounded-xl border-2 border-[#0F766E] bg-[#FAF9F6] p-4 space-y-1"
+                  className="rounded-chip border border-brand-soft bg-brand-wash/50 p-4 space-y-1"
                 >
-                  <p className="text-[18px] font-bold text-[#115E59]">
+                  <p className="text-[16px] font-bold text-brand-deep tnum">
                     {entry.at}
                     {entry.channel
                       ? ` • ${CHANNEL_LABELS[entry.channel]}`
                       : ''}
                   </p>
-                  <p className="text-[20px] font-semibold text-[#111827]">
+                  <p className="text-[20px] font-semibold text-ink">
                     {entry.description}
                   </p>
                   {entry.purpose ? (
-                    <p className="text-[18px] text-[#111827]">
+                    <p className="text-[18px] text-muted">
                       Why: {entry.purpose}
                     </p>
                   ) : null}
                   {entry.recipient ? (
-                    <p className="text-[18px] text-[#111827]">
+                    <p className="text-[18px] text-muted">
                       Shared with: {entry.recipient}
                     </p>
                   ) : null}
@@ -554,16 +560,16 @@ export function MyDataPage({
       <section aria-labelledby="export-heading" className="space-y-4">
         <h2
           id="export-heading"
-          className="text-[24px] font-bold text-[#111827]"
+          className="text-[22px] font-bold tracking-tight text-ink"
         >
           Download My Data
         </h2>
 
         <div
           data-card="true"
-          className="rounded-2xl border-2 border-[#111827] bg-white p-5 space-y-4"
+          className="rounded-card border border-line bg-white p-5 shadow-card anim-fade-up space-y-4"
         >
-          <p className="text-[18px] text-[#111827]">
+          <p className="text-[18px] text-muted">
             Save a copy of your messages, calendar plans, settings, and activity
             history to your device.
           </p>
@@ -579,7 +585,7 @@ export function MyDataPage({
           {exportError ? (
             <div
               role="alert"
-              className="rounded-xl border-2 border-[#BE123C] bg-[#FFF1F2] p-4 space-y-3"
+              className="rounded-card border-2 border-[#BE123C] bg-gradient-to-br from-red-50/90 via-white to-red-50/40 p-4 shadow-card space-y-3"
             >
               <p className="text-[18px] font-semibold text-[#881337]">
                 {exportError}
@@ -598,15 +604,15 @@ export function MyDataPage({
 
       {/* Two-step Erase All My Data */}
       <section aria-labelledby="erase-heading" className="space-y-4">
-        <h2 id="erase-heading" className="text-[24px] font-bold text-[#881337]">
+        <h2 id="erase-heading" className="text-[22px] font-bold text-[#881337]">
           Erase All My Data
         </h2>
 
         <div
           data-card="true"
-          className="rounded-2xl border-2 border-[#BE123C] bg-[#FFF1F2] p-5 space-y-4"
+          className="rounded-card border-2 border-[#BE123C] bg-gradient-to-br from-red-50/90 via-white to-red-50/40 p-5 shadow-card anim-fade-up space-y-4"
         >
-          <p className="text-[18px] text-[#111827]">
+          <p className="text-[18px] text-ink">
             Remove everything stored on this device and disconnect email access.
           </p>
 
@@ -629,12 +635,12 @@ export function MyDataPage({
             <div
               role="region"
               aria-label="Erase step 1 confirmation"
-              className="rounded-xl border-2 border-[#BE123C] bg-white p-4 space-y-4"
+              className="rounded-card border-2 border-[#BE123C] bg-white p-4 shadow-card space-y-4"
             >
               <p className="text-[20px] font-bold text-[#881337]">
                 Step 1 of 2: The following items will be deleted:
               </p>
-              <ul className="list-disc pl-6 space-y-1 text-[18px] text-[#111827]">
+              <ul className="list-disc pl-6 space-y-1 text-[18px] text-ink">
                 <li>All inbox messages and summaries</li>
                 <li>All calendar events and reminders</li>
                 <li>All settings and safety checklist progress</li>
@@ -670,12 +676,12 @@ export function MyDataPage({
             <div
               role="region"
               aria-label="Erase step 2 final confirmation"
-              className="rounded-xl border-2 border-[#BE123C] bg-white p-4 space-y-4"
+              className="rounded-card border-2 border-[#BE123C] bg-white p-4 shadow-card space-y-4"
             >
               <p className="text-[20px] font-bold text-[#881337]">
                 Step 2 of 2: This is permanent and cannot be undone.
               </p>
-              <p className="text-[18px] text-[#111827]">
+              <p className="text-[18px] text-ink">
                 Are you sure you want to remove all your data from this device?
               </p>
               <div className="flex flex-wrap gap-4">
@@ -702,16 +708,16 @@ export function MyDataPage({
           {eraseResultMessage ? (
             <div
               role="status"
-              className="rounded-xl border-2 border-[#0F766E] bg-white p-4 space-y-2"
+              className="rounded-card border-2 border-brand-soft bg-white p-4 shadow-card space-y-2"
             >
-              <p className="flex items-start gap-2 text-[18px] font-semibold text-[#111827]">
-                <span aria-hidden="true" className="mt-0.5 inline-flex shrink-0">
+              <p className="flex items-start gap-2 text-[18px] font-semibold text-ink">
+                <span aria-hidden="true" className="mt-0.5 inline-flex shrink-0 text-brand">
                   <Shield size={20} />
                 </span>
                 <span>{eraseResultMessage}</span>
               </p>
               {eraseInstructions ? (
-                <p className="text-[18px] text-[#111827]">{eraseInstructions}</p>
+                <p className="text-[18px] text-muted">{eraseInstructions}</p>
               ) : null}
             </div>
           ) : null}

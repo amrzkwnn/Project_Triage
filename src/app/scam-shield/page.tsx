@@ -400,14 +400,14 @@ export function ScamShieldPage({
   const canShareWithFamily = canShowAskFamily(settings);
 
   return (
-    <div className="space-y-8">
+    <div className="space-y-7 pb-6">
       <BackToHome onClick={handleBack} />
 
       <section className="space-y-2">
-        <h1 className="text-[28px] font-bold leading-tight text-[#111827]">
+        <h1 className="text-[28px] font-bold leading-tight tracking-tight text-ink">
           Scam Shield
         </h1>
-        <p className="text-[20px] leading-relaxed text-[#111827]">
+        <p className="text-[18px] leading-relaxed text-muted">
           Paste a suspicious message or choose a screenshot to check for scam
           warning signs before you click or pay.
         </p>
@@ -419,11 +419,11 @@ export function ScamShieldPage({
       <section
         aria-labelledby="scam-check-heading"
         data-card="true"
-        className="rounded-2xl border-2 border-[#111827] bg-white p-5 space-y-5"
+        className="rounded-card border border-line bg-white p-5 shadow-card anim-fade-up space-y-5"
       >
         <h2
           id="scam-check-heading"
-          className="text-[24px] font-bold text-[#111827]"
+          className="text-[22px] font-bold tracking-tight text-ink"
         >
           Check a Message or Screenshot
         </h2>
@@ -431,7 +431,7 @@ export function ScamShieldPage({
         <div className="space-y-2">
           <label
             htmlFor="scam-message-input"
-            className="block text-[18px] font-semibold text-[#111827]"
+            className="block text-[18px] font-semibold text-ink"
           >
             Paste the message here (up to 5,000 characters)
           </label>
@@ -442,16 +442,16 @@ export function ScamShieldPage({
             value={messageText}
             onChange={(e) => setMessageText(e.target.value)}
             placeholder="Paste the text message, WhatsApp note, or email here..."
-            className="w-full rounded-xl border-2 border-[#111827] bg-[#FAF9F6] p-4 text-[18px] text-[#111827]"
+            className="w-full rounded-chip border-2 border-line bg-canvas p-4 text-[18px] text-ink focus:border-brand"
           />
         </div>
 
-        <div className="space-y-2">
+        <div className="rounded-card border-2 border-dashed border-brand-soft bg-white/70 p-4 space-y-3">
           <label
             htmlFor="scam-screenshot-input"
-            className="inline-flex min-h-[56px] cursor-pointer items-center gap-3 rounded-xl border-2 border-[#111827] bg-[#FAF9F6] px-4 py-3 text-[18px] font-semibold text-[#111827]"
+            className="pressable inline-flex min-h-[56px] cursor-pointer items-center gap-3 rounded-full border-2 border-brand-soft bg-brand-wash px-5 py-3 text-[18px] font-semibold text-brand-deep shadow-pill transition-colors hover:border-brand"
           >
-            <span aria-hidden="true" className="inline-flex shrink-0">
+            <span aria-hidden="true" className="inline-flex shrink-0 text-brand">
               <Upload size={20} />
             </span>
             <span>Choose Screenshot (JPEG or PNG, up to 10 MB)</span>
@@ -464,7 +464,7 @@ export function ScamShieldPage({
             className="sr-only"
           />
           {screenshotName ? (
-            <p className="text-[18px] font-medium text-[#115E59]">
+            <p className="text-[18px] font-medium text-brand-deep">
               Selected screenshot: {screenshotName}
             </p>
           ) : null}
@@ -483,7 +483,7 @@ export function ScamShieldPage({
         {checkError ? (
           <div
             role="alert"
-            className="rounded-xl border-2 border-[#BE123C] bg-[#FFF1F2] p-4 space-y-3"
+            className="rounded-card border-2 border-[#BE123C] bg-gradient-to-br from-red-50/90 via-white to-red-50/40 p-4 shadow-card space-y-3"
           >
             <p className="flex items-start gap-2 text-[18px] font-semibold text-[#881337]">
               <span aria-hidden="true" className="mt-0.5 inline-flex shrink-0">
@@ -517,9 +517,9 @@ export function ScamShieldPage({
               <div
                 role="region"
                 aria-label="Confirm sharing with family"
-                className="rounded-xl border-2 border-[#0F766E] bg-[#F0FDFA] p-4 space-y-3"
+                className="rounded-card border-2 border-brand-soft bg-brand-wash p-4 shadow-card space-y-3"
               >
-                <p className="text-[20px] font-semibold text-[#111827]">
+                <p className="text-[20px] font-semibold text-ink">
                   Send a short summary of this message to your trusted family
                   member to double-check? Your family code word will never be
                   included.
@@ -547,7 +547,7 @@ export function ScamShieldPage({
 
       {/* 4 Safety Habits displayed together */}
       <section aria-labelledby="habits-heading" className="space-y-4">
-        <h2 id="habits-heading" className="text-[24px] font-bold text-[#111827]">
+        <h2 id="habits-heading" className="text-[22px] font-bold tracking-tight text-ink">
           4 Safety Habits
         </h2>
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
@@ -555,15 +555,18 @@ export function ScamShieldPage({
             <article
               key={habit.id}
               data-card="true"
-              className="rounded-2xl border-2 border-[#0F766E] bg-white p-4 space-y-2"
+              className="rounded-card border border-line bg-white p-5 shadow-card anim-fade-up space-y-3"
             >
-              <h3 className="flex items-center gap-2 text-[20px] font-bold text-[#115E59]">
-                <span aria-hidden="true" className="inline-flex shrink-0">
+              <h3 className="flex items-center gap-3 text-[20px] font-bold text-ink">
+                <span
+                  aria-hidden="true"
+                  className="inline-flex h-10 w-10 rounded-full bg-brand-wash text-brand shrink-0 items-center justify-center"
+                >
                   <ShieldCheck size={22} />
                 </span>
                 <span>{habit.title}</span>
               </h3>
-              <p className="text-[18px] leading-snug text-[#111827]">
+              <p className="text-[18px] leading-snug text-muted">
                 {habit.description}
               </p>
             </article>
@@ -575,18 +578,21 @@ export function ScamShieldPage({
       <section
         aria-labelledby="codeword-heading"
         data-card="true"
-        className="rounded-2xl border-2 border-[#111827] bg-white p-5 space-y-4"
+        className="rounded-card border border-line bg-white p-5 shadow-card anim-fade-up space-y-4"
       >
         <h2
           id="codeword-heading"
-          className="flex items-center gap-2 text-[24px] font-bold text-[#111827]"
+          className="flex items-center gap-3 text-[22px] font-bold tracking-tight text-ink"
         >
-          <span aria-hidden="true" className="inline-flex shrink-0">
-            <KeyRound size={24} />
+          <span
+            aria-hidden="true"
+            className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-brand-wash text-brand"
+          >
+            <KeyRound size={22} />
           </span>
           <span>Family Secret Code Word</span>
         </h2>
-        <p className="text-[18px] leading-relaxed text-[#111827]">
+        <p className="text-[18px] leading-relaxed text-muted">
           Agree on a secret word with your family. If someone calls asking for
           urgent money, ask them for this word first.
         </p>
@@ -595,7 +601,7 @@ export function ScamShieldPage({
           <div className="space-y-2">
             <label
               htmlFor="family-codeword-input"
-              className="block text-[18px] font-semibold text-[#111827]"
+              className="block text-[18px] font-semibold text-ink"
             >
               Your Secret Code Word (1 to 50 characters)
             </label>
@@ -606,7 +612,7 @@ export function ScamShieldPage({
               value={codeWordInput}
               onChange={(e) => setCodeWordInput(e.target.value)}
               placeholder="For example: Mango Tree"
-              className="w-full min-h-[56px] rounded-xl border-2 border-[#111827] bg-[#FAF9F6] px-4 py-3 text-[18px] text-[#111827]"
+              className="w-full min-h-[56px] rounded-chip border-2 border-line bg-canvas px-4 py-3 text-[18px] text-ink focus:border-brand"
             />
           </div>
 
@@ -633,24 +639,27 @@ export function ScamShieldPage({
       <section
         aria-labelledby="checklist-heading"
         data-card="true"
-        className="rounded-2xl border-2 border-[#111827] bg-white p-5 space-y-4"
+        className="rounded-card border border-line bg-white p-5 shadow-card anim-fade-up space-y-4"
       >
         <div className="flex flex-wrap items-center justify-between gap-3">
           <h2
             id="checklist-heading"
-            className="flex items-center gap-2 text-[24px] font-bold text-[#111827]"
+            className="flex items-center gap-3 text-[22px] font-bold tracking-tight text-ink"
           >
-            <span aria-hidden="true" className="inline-flex shrink-0">
-              <PhoneCall size={24} />
+            <span
+              aria-hidden="true"
+              className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-brand-wash text-brand"
+            >
+              <PhoneCall size={22} />
             </span>
             <span>Safe Phone Checklist</span>
           </h2>
           <span
             data-badge="true"
-            className="inline-flex items-center gap-2 rounded-lg border-2 border-[#0F766E] bg-[#F0FDFA] px-3 py-1.5 text-[18px] font-bold text-[#115E59]"
+            className="inline-flex items-center gap-2 rounded-full border-2 border-brand-soft bg-brand-wash px-3.5 py-1.5 text-[16px] font-bold text-brand-deep shadow-pill tnum"
           >
-            <span aria-hidden="true" className="inline-flex shrink-0">
-              <Check size={20} />
+            <span aria-hidden="true" className="inline-flex shrink-0 text-brand">
+              <Check size={18} />
             </span>
             <span>{checklistProgress}</span>
           </span>
@@ -662,13 +671,13 @@ export function ScamShieldPage({
             return (
               <li
                 key={step.id}
-                className="flex flex-wrap items-center justify-between gap-4 rounded-xl border-2 border-[#111827] bg-[#FAF9F6] p-4"
+                className="flex flex-wrap items-center justify-between gap-4 rounded-chip border border-line bg-canvas p-4"
               >
                 <div className="space-y-1 flex-1 min-w-[200px]">
-                  <p className="text-[20px] font-bold text-[#111827]">
+                  <p className="text-[20px] font-bold text-ink">
                     {step.title}
                   </p>
-                  <p className="text-[18px] text-[#111827]">
+                  <p className="text-[18px] text-muted">
                     {step.description}
                   </p>
                 </div>

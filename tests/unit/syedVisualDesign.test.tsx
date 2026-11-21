@@ -27,6 +27,11 @@ import { SegmentedControl } from '@/components/SegmentedControl';
 import { MonthCalendar } from '@/components/MonthCalendar';
 import { HomeHub } from '@/app/page';
 import { CalendarPage } from '@/app/calendar/page';
+import { UnifiedInboxPage } from '@/app/inbox/page';
+import { ScamShieldPage } from '@/app/scam-shield/page';
+import { AiMediaCheckPage } from '@/app/media-check/page';
+import { PhotoHelperPage } from '@/app/photo-helper/page';
+import { MyDataPage } from '@/app/my-data/page';
 
 const BANNED_JARGON =
   /\b(sync|token|api|cache|error code|stack trace|exception|indexeddb|oauth|webhook|regex)\b/i;
@@ -646,5 +651,92 @@ describe('Task 4: Syed Visual Design on HomeHub and CalendarPage', () => {
     expect(html).toContain('Room 4B');
     expect(html).toContain('border-dashed border-brand-soft');
     expect(html).toContain('id="calendar-snap-photo-input"');
+  });
+});
+
+describe('Task 5: Syed Visual Design on Inbox, ScamShield, MediaCheck, PhotoHelper, and MyData', () => {
+  it('UnifiedInboxPage renders sticky FilterChips bar and Syed AI summary gradient card on messages', () => {
+    const html = renderToStaticMarkup(
+      <UnifiedInboxPage
+        initialSettings={createDefaultSettings()}
+        initialItems={[
+          {
+            id: 'msg-1',
+            source: 'whatsappForward',
+            sender: 'City Clinic',
+            text: 'Appointment on 2026-07-15 at 10:30',
+            attachments: [],
+            receivedAt: '2026-07-10T08:00:00.000Z',
+            group: 'Personal',
+            priority: 'Important',
+            summary: {
+              fromApp: 'From WhatsApp',
+              whoSent: 'City Clinic',
+              actionNeeded: 'Confirm calendar date',
+              text: 'City Clinic shared an appointment.',
+            },
+            tier: 2,
+            confidence: 0.9,
+            status: 'ok',
+          },
+        ]}
+      />
+    );
+    expect(html).toContain('sticky top-0');
+    expect(html).toContain('from-brand-soft/80 via-brand-wash to-white');
+    expect(html).toContain('AI summary');
+    expect(html).toContain('rounded-card');
+    expect(html).toContain('shadow-card');
+    expect(html).toContain('← Back to Home');
+
+    const emptyHtml = renderToStaticMarkup(
+      <UnifiedInboxPage initialSettings={createDefaultSettings()} initialItems={[]} />
+    );
+    expect(emptyHtml).toContain('No messages in All yet.');
+    expect(emptyHtml).toContain('border-dashed');
+  });
+
+  it('ScamShieldPage, AiMediaCheckPage, PhotoHelperPage, and MyDataPage render Syed dashed dropzones and rounded-card shadow-card surfaces', () => {
+    const scamHtml = renderToStaticMarkup(
+      <ScamShieldPage initialSettings={createDefaultSettings()} />
+    );
+    expect(scamHtml).toContain('border-dashed border-brand-soft');
+    expect(scamHtml).toContain('rounded-card');
+    expect(scamHtml).toContain('shadow-card');
+    expect(scamHtml).toContain('h-10 w-10 rounded-full bg-brand-wash text-brand');
+
+    const mediaHtml = renderToStaticMarkup(
+      <AiMediaCheckPage
+        initialSettings={createDefaultSettings()}
+        initialOutcome={{
+          result: 'Cannot tell',
+          note: 'No details found.',
+        }}
+      />
+    );
+    expect(mediaHtml).toContain('border-dashed border-brand-soft');
+    expect(mediaHtml).toContain('rounded-card');
+    expect(mediaHtml).toContain('from-brand-soft/80 via-brand-wash to-white');
+    expect(mediaHtml).toContain('from-amber-50 via-white to-amber-50/40');
+
+    const photoHtml = renderToStaticMarkup(
+      <PhotoHelperPage
+        initialSettings={{
+          ...createDefaultSettings(),
+          channels: { ...createDefaultSettings().channels, photos: true },
+        }}
+      />
+    );
+    expect(photoHtml).toContain('border-dashed border-brand-soft');
+    expect(photoHtml).toContain('rounded-card');
+    expect(photoHtml).toContain('bg-brand-wash/70');
+
+    const myDataHtml = renderToStaticMarkup(
+      <MyDataPage initialSettings={createDefaultSettings()} initialAudit={[]} />
+    );
+    expect(myDataHtml).toContain('from-brand-soft via-brand-wash to-white');
+    expect(myDataHtml).toContain('from-red-50/90 via-white to-red-50/40');
+    expect(myDataHtml).toContain('rounded-card');
+    expect(myDataHtml).toContain('shadow-card');
   });
 });

@@ -9,6 +9,7 @@ import {
   HelpCircle,
   ScanEye,
   ShieldAlert,
+  Sparkles,
   Upload,
   Users,
   Volume2,
@@ -279,14 +280,14 @@ export function AiMediaCheckPage({
   const canShare = canShowAskFamily(settings);
 
   return (
-    <div className="space-y-8">
+    <div className="space-y-7 pb-6">
       <BackToHome onClick={handleBack} />
 
       <section className="space-y-2">
-        <h1 className="text-[28px] font-bold leading-tight text-[#111827]">
+        <h1 className="text-[28px] font-bold leading-tight tracking-tight text-ink">
           AI Media Check
         </h1>
-        <p className="text-[20px] leading-relaxed text-[#111827]">
+        <p className="text-[18px] leading-relaxed text-muted">
           Check a photo for AI signs and use the simple 4-spot eye guide below.
           No tool can guarantee a photo is authentic, so always pause if a photo
           asks you to send money.
@@ -299,28 +300,39 @@ export function AiMediaCheckPage({
       <section
         aria-labelledby="media-upload-heading"
         data-card="true"
-        className="rounded-2xl border-2 border-[#111827] bg-white p-5 space-y-5"
+        className="rounded-card border border-line bg-white p-5 shadow-card anim-fade-up space-y-5"
       >
         <h2
           id="media-upload-heading"
-          className="flex items-center gap-2 text-[24px] font-bold text-[#111827]"
+          className="flex items-center gap-3 text-[22px] font-bold tracking-tight text-ink"
         >
-          <span aria-hidden="true" className="inline-flex shrink-0">
-            <ScanEye size={24} />
+          <span
+            aria-hidden="true"
+            className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-brand-wash text-brand"
+          >
+            <ScanEye size={22} />
           </span>
           <span>Check a Photo</span>
         </h2>
 
-        <div className="space-y-2">
-          <label
-            htmlFor="media-check-file-input"
-            className="inline-flex min-h-[56px] cursor-pointer items-center gap-3 rounded-xl border-2 border-[#0F766E] bg-[#F0FDFA] px-5 py-3 text-[18px] font-semibold text-[#115E59]"
+        <div className="rounded-card border-2 border-dashed border-brand-soft bg-white/70 p-6 text-center space-y-3">
+          <span
+            aria-hidden="true"
+            className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-brand-wash text-brand"
           >
-            <span aria-hidden="true" className="inline-flex shrink-0">
-              <Upload size={22} />
-            </span>
-            <span>Choose a Photo (JPEG, PNG, or WebP, up to 10 MB)</span>
-          </label>
+            <Upload size={22} />
+          </span>
+          <div>
+            <label
+              htmlFor="media-check-file-input"
+              className="pressable inline-flex min-h-[56px] cursor-pointer items-center justify-center gap-3 rounded-full border-2 border-brand bg-brand px-5 py-3 text-[18px] font-semibold text-white shadow-pill transition-colors hover:bg-brand-deep"
+            >
+              <span aria-hidden="true" className="inline-flex shrink-0">
+                <Upload size={20} />
+              </span>
+              <span>Choose a Photo (JPEG, PNG, or WebP, up to 10 MB)</span>
+            </label>
+          </div>
           <input
             id="media-check-file-input"
             type="file"
@@ -329,7 +341,7 @@ export function AiMediaCheckPage({
             className="sr-only"
           />
           {selectedFileName ? (
-            <p className="text-[18px] font-semibold text-[#111827]">
+            <p className="text-[18px] font-semibold text-brand-deep">
               Checked photo: {selectedFileName}
             </p>
           ) : null}
@@ -338,7 +350,7 @@ export function AiMediaCheckPage({
         {uploadError ? (
           <div
             role="alert"
-            className="flex items-start gap-2 rounded-xl border-2 border-[#BE123C] bg-[#FFF1F2] p-4 text-[18px] font-semibold text-[#881337]"
+            className="flex items-start gap-2 rounded-card border-2 border-[#BE123C] bg-gradient-to-br from-red-50/90 via-white to-red-50/40 p-4 text-[18px] font-semibold text-[#881337] shadow-card"
           >
             <span aria-hidden="true" className="mt-0.5 inline-flex shrink-0">
               <AlertTriangle size={22} />
@@ -348,16 +360,28 @@ export function AiMediaCheckPage({
         ) : null}
 
         {outcome ? (
-          <div className="rounded-xl border-2 border-[#111827] bg-[#FAF9F6] p-4 space-y-3">
-            <div>{renderOutcomeBadge(outcome)}</div>
-            {outcome.signalName ? (
-              <p className="text-[18px] font-semibold text-[#111827]">
-                Detail found: {outcome.signalName}
+          <div className="relative overflow-hidden rounded-card border border-brand-soft/70 bg-gradient-to-br from-brand-soft/80 via-brand-wash to-white p-4 shadow-card space-y-3">
+            <div
+              aria-hidden="true"
+              className="pointer-events-none absolute -right-10 -top-12 h-32 w-32 rounded-full bg-brand-soft/50 blur-2xl"
+            />
+            <div className="relative space-y-3">
+              <p className="flex items-center gap-1.5 text-[12px] font-bold uppercase tracking-[0.08em] text-brand-deep">
+                <span aria-hidden="true" className="inline-flex shrink-0">
+                  <Sparkles size={14} strokeWidth={2.4} />
+                </span>
+                <span>Check summary</span>
               </p>
-            ) : null}
-            <p className="text-[20px] leading-relaxed text-[#111827]">
-              {outcome.note}
-            </p>
+              <div>{renderOutcomeBadge(outcome)}</div>
+              {outcome.signalName ? (
+                <p className="text-[18px] font-semibold text-ink">
+                  Detail found: {outcome.signalName}
+                </p>
+              ) : null}
+              <p className="text-[20px] leading-relaxed text-ink">
+                {outcome.note}
+              </p>
+            </div>
           </div>
         ) : null}
 
@@ -372,7 +396,7 @@ export function AiMediaCheckPage({
               Ask Family to Check
             </SeniorButton>
           ) : (
-            <div className="rounded-xl border-2 border-[#D97706] bg-[#FFFBEB] p-4 space-y-3">
+            <div className="rounded-card border-2 border-[#D97706] bg-gradient-to-br from-amber-50 via-white to-amber-50/40 p-4 shadow-card space-y-3">
               <p className="text-[18px] font-semibold text-[#92400E]">
                 Want to ask family to look at this photo? Turn on Family Sharing
                 in My Data first.
@@ -399,9 +423,9 @@ export function AiMediaCheckPage({
             <div
               role="region"
               aria-label="Confirm sharing photo check with family"
-              className="rounded-xl border-2 border-[#0F766E] bg-[#F0FDFA] p-4 space-y-3"
+              className="rounded-card border-2 border-brand-soft bg-brand-wash p-4 shadow-card space-y-3"
             >
-              <p className="text-[20px] font-semibold text-[#111827]">
+              <p className="text-[20px] font-semibold text-ink">
                 Send this photo check summary to your trusted family member?
               </p>
               <div className="flex flex-wrap gap-3">
@@ -428,10 +452,13 @@ export function AiMediaCheckPage({
       <section aria-labelledby="eye-guide-heading" className="space-y-4">
         <h2
           id="eye-guide-heading"
-          className="flex items-center gap-2 text-[24px] font-bold text-[#111827]"
+          className="flex items-center gap-3 text-[22px] font-bold tracking-tight text-ink"
         >
-          <span aria-hidden="true" className="inline-flex shrink-0">
-            <Eye size={24} />
+          <span
+            aria-hidden="true"
+            className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-brand-wash text-brand"
+          >
+            <Eye size={22} />
           </span>
           <span>4-Spot Eye Check Guide</span>
         </h2>
@@ -441,12 +468,12 @@ export function AiMediaCheckPage({
             <article
               key={spot.id}
               data-card="true"
-              className="rounded-2xl border-2 border-[#0F766E] bg-white p-4 space-y-2"
+              className="rounded-card border border-line bg-white p-4 shadow-card anim-fade-up space-y-2"
             >
-              <h3 className="text-[20px] font-bold text-[#115E59]">
+              <h3 className="text-[20px] font-bold text-brand-deep">
                 {spot.title}
               </h3>
-              <p className="text-[18px] leading-snug text-[#111827]">
+              <p className="text-[18px] leading-snug text-ink">
                 {spot.tip}
               </p>
             </article>
@@ -458,18 +485,21 @@ export function AiMediaCheckPage({
       <section
         aria-labelledby="voice-clone-heading"
         data-card="true"
-        className="rounded-2xl border-2 border-[#D97706] bg-[#FFFBEB] p-5 space-y-3"
+        className="rounded-card border-2 border-[#D97706] bg-gradient-to-br from-amber-50 via-white to-amber-50/40 p-5 shadow-card anim-fade-up space-y-3"
       >
         <h2
           id="voice-clone-heading"
-          className="flex items-center gap-2 text-[24px] font-bold text-[#92400E]"
+          className="flex items-center gap-3 text-[22px] font-bold text-[#92400E]"
         >
-          <span aria-hidden="true" className="inline-flex shrink-0">
-            <Volume2 size={24} />
+          <span
+            aria-hidden="true"
+            className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-amber-100 text-[#92400E]"
+          >
+            <Volume2 size={22} />
           </span>
           <span>Voice Clone Safety</span>
         </h2>
-        <p className="text-[20px] leading-relaxed text-[#111827]">
+        <p className="text-[20px] leading-relaxed text-ink">
           {VOICE_CLONE_SAFETY_NOTE}
         </p>
       </section>
