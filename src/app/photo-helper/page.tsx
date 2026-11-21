@@ -243,7 +243,7 @@ export function PhotoHelperPage({
   const scanWizardSteps = OLD_PRINT_SCAN_STEPS.map((s) => ({
     id: `scan-step-${s.step}`,
     title: s.title,
-    content: <p className="text-[18px] text-[#111827]">{s.instruction}</p>,
+    content: <p className="text-[18px] text-ink">{s.instruction}</p>,
   }));
 
   return (

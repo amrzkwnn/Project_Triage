@@ -997,13 +997,12 @@ export function UnifiedInboxPage({
       {/* Sticky Frosted Group Filter Bar */}
       <nav
         aria-label="Inbox groups"
-        className="sticky top-0 z-20 -mx-5 bg-canvas/95 px-5 py-3 backdrop-blur-md"
+        className="sticky top-0 z-20 -mx-5 bg-canvas/95 px-5 py-3 backdrop-blur-md max-w-none"
       >
         <FilterChips
           items={GROUP_CHIP_ITEMS}
           value={activeTab}
           onChange={setActiveTab}
-          ariaLabel="Message groups"
         />
       </nav>
 

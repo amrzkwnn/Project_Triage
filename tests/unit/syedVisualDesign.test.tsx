@@ -683,6 +683,9 @@ describe('Task 5: Syed Visual Design on Inbox, ScamShield, MediaCheck, PhotoHelp
       />
     );
     expect(html).toContain('sticky top-0');
+    expect(html).toContain(
+      'sticky top-0 z-20 -mx-5 bg-canvas/95 px-5 py-3 backdrop-blur-md max-w-none'
+    );
     expect(html).toContain('from-brand-soft/80 via-brand-wash to-white');
     expect(html).toContain('AI summary');
     expect(html).toContain('rounded-card');
