@@ -1,0 +1,10 @@
+node_modules/
+.next/
+out/
+coverage/
+.env*.local
+.worktrees/
+.superpowers/
+*.tsbuildinfo
+next-env.d.ts
+.DS_Store
