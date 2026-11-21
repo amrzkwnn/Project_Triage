@@ -470,4 +470,84 @@ describe('Task 3: Syed Shared UI Primitives', () => {
     expect(html).toContain('All clear');
     expect(html).toContain('Nothing urgent today.');
   });
+
+  it('MonthCalendar syncs visible month/year when selectedDate prop changes across months while preserving manual browsing', () => {
+    const stateSlots: unknown[] = [];
+    let stateCursor = 0;
+
+    const useStateSpy = vi.spyOn(React, 'useState').mockImplementation(((
+      initialState: unknown
+    ) => {
+      const idx = stateCursor++;
+      if (!(idx in stateSlots)) {
+        stateSlots[idx] =
+          typeof initialState === 'function'
+            ? (initialState as () => unknown)()
+            : initialState;
+      }
+      const setState = (next: unknown) => {
+        stateSlots[idx] =
+          typeof next === 'function'
+            ? (next as (prev: unknown) => unknown)(stateSlots[idx])
+            : next;
+      };
+      return [stateSlots[idx], setState];
+    }) as typeof React.useState);
+
+    const useMemoSpy = vi
+      .spyOn(React, 'useMemo')
+      .mockImplementation((factory) => factory());
+
+    try {
+      const onSelectDate = vi.fn();
+      const renderTree = (selectedDate: string) => {
+        stateCursor = 0;
+        return MonthCalendar({
+          selectedDate,
+          onSelectDate,
+          events: [],
+        });
+      };
+
+      const readHeading = (tree: React.ReactNode) => {
+        const headings = findElements(tree, (el) => el.type === 'h2');
+        expect(headings).toHaveLength(1);
+        return String(headings[0].props.children);
+      };
+
+      // 1. Initial render shows July 2026
+      const tree1 = renderTree('2026-07-15');
+      expect(readHeading(tree1)).toBe('July 2026');
+
+      // 2. Manual Next month click advances to August 2026 and persists when selectedDate is unchanged
+      const nextBtn = findElements(
+        tree1,
+        (el) => el.type === 'button' && el.props['aria-label'] === 'Next month'
+      )[0];
+      expect(nextBtn).toBeDefined();
+      (nextBtn.props.onClick as () => void)();
+
+      const tree2 = renderTree('2026-07-15');
+      expect(readHeading(tree2)).toBe('August 2026');
+
+      // 3. External selectedDate prop change across months syncs visible month/year to October 2026
+      const tree3 = renderTree('2026-10-05');
+      expect(readHeading(tree3)).toBe('October 2026');
+
+      // 4. Manual Previous month browsing still works after external sync
+      const prevBtn = findElements(
+        tree3,
+        (el) =>
+          el.type === 'button' && el.props['aria-label'] === 'Previous month'
+      )[0];
+      expect(prevBtn).toBeDefined();
+      (prevBtn.props.onClick as () => void)();
+
+      const tree4 = renderTree('2026-10-05');
+      expect(readHeading(tree4)).toBe('September 2026');
+    } finally {
+      useStateSpy.mockRestore();
+      useMemoSpy.mockRestore();
+    }
+  });
 });

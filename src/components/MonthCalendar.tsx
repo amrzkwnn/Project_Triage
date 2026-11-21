@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useMemo, useState } from 'react';
+import React from 'react';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
 import { Temporal } from 'temporal-polyfill';
 import type { CalendarCategory, CalendarEvent } from '@/lib/types';
@@ -47,6 +47,12 @@ interface CalendarCell {
   out: boolean;
 }
 
+interface CalendarViewState {
+  year: number;
+  month: number;
+  trackedSelectedIso: string;
+}
+
 /**
  * Dark-card month grid: month title + circular chevron nav, weekday row,
  * 7-column day cells. Selected day sits in a filled teal circle, today is
@@ -61,12 +67,26 @@ export function MonthCalendar({
   const selectedIso = selectedPlain.toString();
   const todayIso = Temporal.Now.plainDateISO().toString();
 
-  const [view, setView] = useState<{ year: number; month: number }>(() => ({
+  const [viewState, setViewState] = React.useState<CalendarViewState>(() => ({
     year: selectedPlain.year,
     month: selectedPlain.month,
+    trackedSelectedIso: selectedIso,
   }));
 
-  const eventsByDate = useMemo(() => {
+  const view =
+    viewState.trackedSelectedIso === selectedIso
+      ? viewState
+      : {
+          year: selectedPlain.year,
+          month: selectedPlain.month,
+          trackedSelectedIso: selectedIso,
+        };
+
+  if (view !== viewState) {
+    setViewState(view);
+  }
+
+  const eventsByDate = React.useMemo(() => {
     const map = new Map<string, CalendarEvent[]>();
     for (const ev of events) {
       const list = map.get(ev.date);
@@ -79,7 +99,7 @@ export function MonthCalendar({
     return map;
   }, [events]);
 
-  const cells = useMemo<CalendarCell[]>(() => {
+  const cells = React.useMemo<CalendarCell[]>(() => {
     const firstOfMonth = Temporal.PlainDate.from({
       year: view.year,
       month: view.month,
@@ -104,18 +124,22 @@ export function MonthCalendar({
       });
     }
     return out;
-  }, [view]);
+  }, [view.year, view.month]);
 
   const monthLabel = `${MONTH_NAMES[view.month - 1]} ${view.year}`;
 
   const shiftMonth = (delta: number) => {
-    setView((prev) => {
+    setViewState((prev) => {
       const shifted = Temporal.PlainDate.from({
         year: prev.year,
         month: prev.month,
         day: 1,
       }).add({ months: delta });
-      return { year: shifted.year, month: shifted.month };
+      return {
+        ...prev,
+        year: shifted.year,
+        month: shifted.month,
+      };
     });
   };
 
@@ -179,7 +203,11 @@ export function MonthCalendar({
               onClick={() => {
                 onSelectDate(iso);
                 if (cell.out) {
-                  setView({ year: cell.date.year, month: cell.date.month });
+                  setViewState((prev) => ({
+                    ...prev,
+                    year: cell.date.year,
+                    month: cell.date.month,
+                  }));
                 }
               }}
               className="pressable flex min-h-[56px] cursor-pointer flex-col items-center justify-center focus-visible:outline focus-visible:outline-[3px] focus-visible:outline-offset-[2px] focus-visible:outline-white"
