@@ -116,82 +116,105 @@ export function MyDataPage({
     [vault]
   );
 
-  const loadData = React.useCallback(async () => {
-    if (!resolvedVault) return;
-    const [settingsRes, auditRes, tokensRes] = await Promise.all([
-      resolvedVault.getSettings(),
-      resolvedVault.listAudit(),
-      typeof resolvedVault.listOAuthTokens === 'function'
-        ? resolvedVault.listOAuthTokens()
-        : Promise.resolve({ ok: true as const, value: [] as OAuthTokenRecord[] }),
-    ]);
-    if (settingsRes.ok) {
-      setSettings(settingsRes.value);
-      setAiState(createAiToggleState(settingsRes.value.allowAiReading));
-    }
-    if (auditRes.ok) {
-      setAuditEntries(auditRes.value);
-    }
-    if (tokensRes.ok && tokensRes.value.length > 0) {
-      setConnectedAccount(tokensRes.value[0]);
-    }
-  }, [resolvedVault]);
+  const callbackPromiseRef = React.useRef<{
+    key: string;
+    promise: ReturnType<typeof completeCloudLoginCallback>;
+  } | null>(null);
+  const needsInitialLoad =
+    initialSettings === undefined || initialAudit === undefined;
 
   React.useEffect(() => {
-    if (initialSettings === undefined || initialAudit === undefined) {
-      void loadData();
-    }
-  }, [initialSettings, initialAudit, loadData]);
-
-  React.useEffect(() => {
-    if (typeof window === 'undefined' || !window.location) {
-      return;
-    }
-    const search = window.location.search ?? '';
-    const hash = window.location.hash ?? '';
-    if (!parseCloudLoginCallback(search, hash)) {
-      return;
-    }
     let cancelled = false;
+
     void (async () => {
       let latestSettings = settings;
-      if (resolvedVault) {
+
+      if (resolvedVault && needsInitialLoad) {
+        const [settingsRes, auditRes, tokensRes] = await Promise.all([
+          resolvedVault.getSettings(),
+          resolvedVault.listAudit(),
+          typeof resolvedVault.listOAuthTokens === 'function'
+            ? resolvedVault.listOAuthTokens()
+            : Promise.resolve({
+                ok: true as const,
+                value: [] as OAuthTokenRecord[],
+              }),
+        ]);
+        if (cancelled) return;
+        if (settingsRes.ok) {
+          latestSettings = settingsRes.value;
+          setSettings(settingsRes.value);
+          setAiState(createAiToggleState(settingsRes.value.allowAiReading));
+        }
+        if (auditRes.ok) {
+          setAuditEntries(auditRes.value);
+        }
+        if (tokensRes.ok && tokensRes.value.length > 0) {
+          setConnectedAccount(tokensRes.value[0]);
+        }
+      }
+
+      if (typeof window === 'undefined' || !window.location) {
+        return;
+      }
+      const search = window.location.search ?? '';
+      const hash = window.location.hash ?? '';
+      if (!parseCloudLoginCallback(search, hash)) {
+        return;
+      }
+
+      if (resolvedVault && !needsInitialLoad) {
         const settingsRes = await resolvedVault.getSettings();
+        if (cancelled) return;
         if (settingsRes.ok) {
           latestSettings = settingsRes.value;
         }
       }
-      const res = await completeCloudLoginCallback({
-        vault: resolvedVault,
-        settings: latestSettings,
-        search,
-        hash,
-      });
-      if (!cancelled) {
-        if (res.ok) {
-          setConnectedAccount(res.record);
-          setSettings(res.settings);
-          onSettingsChange?.(res.settings);
-          setEmailError(undefined);
-          setEmailNotice(res.message);
-          setStatusMessage(res.message);
-        } else {
-          setEmailNotice(undefined);
-          setEmailError(res.errorMessage);
-          setStatusMessage(res.errorMessage);
-        }
-        try {
-          window.history.replaceState(null, '', window.location.pathname);
-        } catch {
-          // ignore history error
-        }
+
+      const callbackKey = `${search}|${hash}`;
+      let callbackPromise: ReturnType<typeof completeCloudLoginCallback>;
+      if (callbackPromiseRef.current?.key === callbackKey) {
+        callbackPromise = callbackPromiseRef.current.promise;
+      } else {
+        callbackPromise = completeCloudLoginCallback({
+          vault: resolvedVault,
+          settings: latestSettings,
+          search,
+          hash,
+        });
+        callbackPromiseRef.current = {
+          key: callbackKey,
+          promise: callbackPromise,
+        };
+      }
+
+      const res = await callbackPromise;
+      if (cancelled) return;
+
+      if (res.ok) {
+        setConnectedAccount(res.record);
+        setSettings(res.settings);
+        onSettingsChange?.(res.settings);
+        setEmailError(undefined);
+        setEmailNotice(res.message);
+        setStatusMessage(res.message);
+      } else {
+        setEmailNotice(undefined);
+        setEmailError(res.errorMessage);
+        setStatusMessage(res.errorMessage);
+      }
+      try {
+        window.history.replaceState(null, '', window.location.pathname);
+      } catch {
+        // ignore history error
       }
     })();
+
     return () => {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [resolvedVault, needsInitialLoad]);
 
   const orderedAudit = React.useMemo(
     () => listAuditNewestFirst(auditEntries),

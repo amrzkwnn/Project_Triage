@@ -181,7 +181,12 @@ export function buildCloudLoginRedirectUrl(params: {
   const scopes =
     params.provider === 'Gmail'
       ? (['https://www.googleapis.com/auth/gmail.readonly', 'openid', 'email'] as const)
-      : (['https://graph.microsoft.com/mail.read', 'openid', 'email'] as const);
+      : ([
+          'https://graph.microsoft.com/mail.read',
+          'https://graph.microsoft.com/user.read',
+          'openid',
+          'email',
+        ] as const);
 
   const scopeValidation = validateReadOnlyScopes(scopes);
   if (!scopeValidation.ok) {
@@ -722,6 +727,7 @@ export async function syncEmailsFromRelay(params: {
 
   let cloudStored: InboxItem[] = [];
   let cloudFetchSucceeded = false;
+  let cloudFetchFailed = false;
 
   if (typeof params.vault.listOAuthTokens === 'function') {
     const tokensRes = await params.vault.listOAuthTokens();
@@ -755,6 +761,8 @@ export async function syncEmailsFromRelay(params: {
         if (cloudOutcome.status === 'ok') {
           cloudStored = cloudOutcome.stored;
           cloudFetchSucceeded = true;
+        } else if (cloudOutcome.status === 'error') {
+          cloudFetchFailed = true;
         }
       }
     }
@@ -825,6 +833,14 @@ export async function syncEmailsFromRelay(params: {
     });
 
     const merged = deduplicateItemsById([...cloudStored, ...result.stored]);
+
+    if (cloudFetchFailed && merged.length === 0) {
+      return {
+        ok: false,
+        errorMessage:
+          'We could not check for new emails right now. Please try again.',
+      };
+    }
 
     return {
       ok: true,

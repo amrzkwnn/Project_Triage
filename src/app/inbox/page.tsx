@@ -442,6 +442,9 @@ export function UnifiedInboxPage({
     string | undefined
   >(undefined);
   const [isCheckingEmails, setIsCheckingEmails] = React.useState<boolean>(false);
+  const [reconnectMessage, setReconnectMessage] = React.useState<
+    string | undefined
+  >(initialReconnectMessage);
   const needsInitialLoad =
     initialSettings === undefined ||
     initialItems === undefined ||
@@ -491,6 +494,15 @@ export function UnifiedInboxPage({
           }
           return;
         }
+
+        if (res.reconnectRequired) {
+          const nextReconnectMessage = res.reconnectMessage ?? res.message;
+          setReconnectMessage(nextReconnectMessage);
+          setStatusMessage(nextReconnectMessage);
+          return;
+        }
+
+        setReconnectMessage(undefined);
 
         if (res.stored.length > 0) {
           const newIds = new Set(res.stored.map((item) => item.id));
@@ -845,7 +857,7 @@ export function UnifiedInboxPage({
       <StatusLive message={statusMessage} />
 
       {/* Email reconnect prompt when connection expired/revoked */}
-      {initialReconnectMessage ? (
+      {reconnectMessage ? (
         <div
           role="alert"
           data-card="true"
@@ -855,7 +867,7 @@ export function UnifiedInboxPage({
             <span aria-hidden="true" className="mt-0.5 inline-flex shrink-0">
               <AlertTriangle size={22} />
             </span>
-            <span>{initialReconnectMessage}</span>
+            <span>{reconnectMessage}</span>
           </p>
           <SeniorButton
             variant="primary"

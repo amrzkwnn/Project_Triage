@@ -1615,8 +1615,10 @@ describe('Task 2: Read-Only Identity Scopes & MyDataPage Cloud Sign-In Lifecycle
       };
 
       const stateSlots: unknown[] = [];
+      const refSlots: Array<{ current: unknown }> = [];
       const effectPrevDeps: Array<readonly unknown[] | undefined> = [];
       let stateCursor = 0;
+      let refCursor = 0;
       let effectCursor = 0;
       let queuedEffects: Array<() => void> = [];
 
@@ -1638,6 +1640,15 @@ describe('Task 2: Read-Only Identity Scopes & MyDataPage Cloud Sign-In Lifecycle
         };
         return [stateSlots[idx], setState];
       }) as typeof React.useState);
+      const useRefSpy = vi.spyOn(React, 'useRef').mockImplementation(((
+        initialValue: unknown
+      ) => {
+        const idx = refCursor++;
+        if (!(idx in refSlots)) {
+          refSlots[idx] = { current: initialValue };
+        }
+        return refSlots[idx];
+      }) as typeof React.useRef);
       const useMemoSpy = vi
         .spyOn(React, 'useMemo')
         .mockImplementation((factory) => factory());
@@ -1678,6 +1689,7 @@ describe('Task 2: Read-Only Identity Scopes & MyDataPage Cloud Sign-In Lifecycle
       try {
         const renderPass = () => {
           stateCursor = 0;
+          refCursor = 0;
           effectCursor = 0;
           queuedEffects = [];
           const tree = MyDataPage({
@@ -1711,6 +1723,7 @@ describe('Task 2: Read-Only Identity Scopes & MyDataPage Cloud Sign-In Lifecycle
         useEffectSpy.mockRestore();
         useCallbackSpy.mockRestore();
         useMemoSpy.mockRestore();
+        useRefSpy.mockRestore();
         useStateSpy.mockRestore();
       }
     };
@@ -1752,5 +1765,482 @@ describe('Task 2: Read-Only Identity Scopes & MyDataPage Cloud Sign-In Lifecycle
     expect(rejectedRes.alerts.length).toBeGreaterThan(0);
     expect(rejectedRes.savedTokens).toHaveLength(0);
     expect(rejectedRes.replaceState).toHaveBeenCalledWith(null, '', '/my-data');
+  });
+});
+
+describe('Final-Review Fix Wave: Reconnect State, MyData Mount Sequence, Outlook Scope, and Cloud Errors', () => {
+  it('Fix 1: UnifiedInboxPage shows reconnect banner on 401/403 (including mount auto-check with silentOnError) and clears it on a subsequent clean check', async () => {
+    const onSettings = {
+      ...createDefaultSettings(),
+      channels: { ...createDefaultSettings().channels, email: true },
+    };
+    let tokenValue = 'expired-token-123';
+    const mockVault: any = {
+      getSettings: async () => ({ ok: true, value: onSettings }),
+      listItems: async () => ({ ok: true, value: [] }),
+      listEvents: async () => ({ ok: true, value: [] }),
+      listOAuthTokens: async () => ({
+        ok: true,
+        value: [
+          {
+            id: 'email-account-primary',
+            account: 'mary.tan@gmail.com',
+            provider: 'Gmail',
+            token: tokenValue,
+          },
+        ],
+      }),
+      putItem: async () => ({ ok: true, value: undefined }),
+      appendAudit: async () => ({ ok: true, value: undefined }),
+    };
+
+    let gmailExpired = true;
+    const mockFetch = (async (input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.startsWith('https://gmail.googleapis.com/')) {
+        if (gmailExpired) {
+          return new Response('Unauthorized', { status: 401 });
+        }
+        return new Response(JSON.stringify({ messages: [] }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      if (url.includes('/api/ingest/pull')) {
+        return new Response(JSON.stringify({ items: [] }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      return new Response('Not found', { status: 404 });
+    }) as typeof fetch;
+
+    const stateSlots: unknown[] = [];
+    const refSlots: Array<{ current: unknown }> = [];
+    const effectPrevDeps: Array<readonly unknown[] | undefined> = [];
+    let stateCursor = 0;
+    let refCursor = 0;
+    let effectCursor = 0;
+    let queuedEffects: Array<() => void> = [];
+
+    const useStateSpy = vi.spyOn(React, 'useState').mockImplementation(((
+      initialState: unknown
+    ) => {
+      const idx = stateCursor++;
+      if (!(idx in stateSlots)) {
+        stateSlots[idx] =
+          typeof initialState === 'function'
+            ? (initialState as () => unknown)()
+            : initialState;
+      }
+      const setState = (next: unknown) => {
+        stateSlots[idx] =
+          typeof next === 'function'
+            ? (next as (prev: unknown) => unknown)(stateSlots[idx])
+            : next;
+      };
+      return [stateSlots[idx], setState];
+    }) as typeof React.useState);
+    const useRefSpy = vi.spyOn(React, 'useRef').mockImplementation(((
+      initialValue: unknown
+    ) => {
+      const idx = refCursor++;
+      if (!(idx in refSlots)) {
+        refSlots[idx] = { current: initialValue };
+      }
+      return refSlots[idx];
+    }) as typeof React.useRef);
+    const useMemoSpy = vi
+      .spyOn(React, 'useMemo')
+      .mockImplementation((factory) => factory());
+    const useCallbackSpy = vi
+      .spyOn(React, 'useCallback')
+      .mockImplementation((fn) => fn);
+    const useEffectSpy = vi
+      .spyOn(React, 'useEffect')
+      .mockImplementation((effect, deps) => {
+        const idx = effectCursor++;
+        const prevDeps = effectPrevDeps[idx];
+        const depsChanged =
+          !prevDeps ||
+          !deps ||
+          prevDeps.length !== deps.length ||
+          deps.some((d, i) => !Object.is(d, prevDeps[i]));
+        if (depsChanged) {
+          effectPrevDeps[idx] = deps ? [...deps] : undefined;
+          queuedEffects.push(effect as () => void);
+        }
+      });
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockImplementation(mockFetch);
+
+    try {
+      const renderAndRunEffects = () => {
+        stateCursor = 0;
+        refCursor = 0;
+        effectCursor = 0;
+        queuedEffects = [];
+        const tree = UnifiedInboxPage({
+          initialSettings: onSettings,
+          vault: mockVault,
+        });
+        for (const eff of queuedEffects) {
+          eff();
+        }
+        return tree;
+      };
+
+      // Render 1: triggers initial loadData()
+      renderAndRunEffects();
+      await new Promise((r) => setTimeout(r, 20));
+
+      // Render 2: initialLoadDone=true triggers mount auto-check (silentOnError: true) -> 401
+      renderAndRunEffects();
+      await new Promise((r) => setTimeout(r, 30));
+
+      // Render 3: reconnect alert card and status live message must be displayed
+      const expiredTree = renderAndRunEffects();
+      const reconnectButtons = findElements(
+        expiredTree,
+        (el) =>
+          el.type === SeniorButton &&
+          String(el.props.children).includes('Reconnect Email in My Data')
+      );
+      expect(reconnectButtons).toHaveLength(1);
+
+      const alerts = findElements(expiredTree, (el) => el.props.role === 'alert');
+      const alertText = JSON.stringify(alerts);
+      expect(alertText).toContain(EMAIL_RECONNECT_MESSAGE);
+
+      const statusLiveEls = findElements(
+        expiredTree,
+        (el) => el.type === StatusLive
+      );
+      expect(statusLiveEls[0]?.props.message).toBe(EMAIL_RECONNECT_MESSAGE);
+
+      // Subsequent clean check clears reconnect banner
+      gmailExpired = false;
+      tokenValue = 'fresh-live-token';
+      const checkBtn = findElements(
+        expiredTree,
+        (el) =>
+          el.type === SeniorButton &&
+          String(el.props.children).includes('Check for New Emails')
+      )[0];
+      expect(checkBtn).toBeDefined();
+      await (checkBtn.props.onClick as () => Promise<void>)();
+      await new Promise((r) => setTimeout(r, 30));
+
+      const cleanTree = renderAndRunEffects();
+      const remainingReconnectButtons = findElements(
+        cleanTree,
+        (el) =>
+          el.type === SeniorButton &&
+          String(el.props.children).includes('Reconnect Email in My Data')
+      );
+      expect(remainingReconnectButtons).toHaveLength(0);
+    } finally {
+      fetchSpy.mockRestore();
+      useEffectSpy.mockRestore();
+      useCallbackSpy.mockRestore();
+      useMemoSpy.mockRestore();
+      useRefSpy.mockRestore();
+      useStateSpy.mockRestore();
+    }
+  });
+
+  it('Fix 2: MyDataPage sequences initial vault load before OAuth callback completion without clobbering connectedAccount or channels.email', async () => {
+    const replaceState = vi.fn();
+    const assign = vi.fn();
+    const onSettingsChange = vi.fn();
+    const staleOldToken = {
+      id: 'email-account-primary',
+      account: 'old.expired@gmail.com',
+      provider: 'Gmail',
+      token: 'stale-old-token',
+    };
+    const savedTokens: any[] = [staleOldToken];
+    let vaultSettings = createDefaultSettings();
+    let saveOAuthCalls = 0;
+
+    const mockVault: any = {
+      getSettings: async () => {
+        const snapshot = {
+          ...vaultSettings,
+          channels: { ...vaultSettings.channels },
+        };
+        await new Promise((r) => setTimeout(r, 10));
+        return { ok: true, value: snapshot };
+      },
+      saveSettings: async (next: any) => {
+        vaultSettings = next;
+        return { ok: true, value: undefined };
+      },
+      listAudit: async () => ({ ok: true, value: [] }),
+      listOAuthTokens: async () => {
+        const snapshot = [...savedTokens];
+        // Intentionally slower than getSettings + callback fetch so concurrent loadData would clobber post-callback state
+        await new Promise((r) => setTimeout(r, 60));
+        return { ok: true, value: snapshot };
+      },
+      saveOAuthToken: async (rec: any) => {
+        saveOAuthCalls += 1;
+        savedTokens.splice(0, savedTokens.length, rec);
+        return { ok: true, value: undefined };
+      },
+    };
+
+    const stateSlots: unknown[] = [];
+    const refSlots: Array<{ current: unknown }> = [];
+    const effectPrevDeps: Array<readonly unknown[] | undefined> = [];
+    let stateCursor = 0;
+    let refCursor = 0;
+    let effectCursor = 0;
+    let queuedEffects: Array<() => void | (() => void)> = [];
+
+    const useStateSpy = vi.spyOn(React, 'useState').mockImplementation(((
+      initialState: unknown
+    ) => {
+      const idx = stateCursor++;
+      if (!(idx in stateSlots)) {
+        stateSlots[idx] =
+          typeof initialState === 'function'
+            ? (initialState as () => unknown)()
+            : initialState;
+      }
+      const setState = (next: unknown) => {
+        stateSlots[idx] =
+          typeof next === 'function'
+            ? (next as (prev: unknown) => unknown)(stateSlots[idx])
+            : next;
+      };
+      return [stateSlots[idx], setState];
+    }) as typeof React.useState);
+    const useRefSpy = vi.spyOn(React, 'useRef').mockImplementation(((
+      initialValue: unknown
+    ) => {
+      const idx = refCursor++;
+      if (!(idx in refSlots)) {
+        refSlots[idx] = { current: initialValue };
+      }
+      return refSlots[idx];
+    }) as typeof React.useRef);
+    const useMemoSpy = vi
+      .spyOn(React, 'useMemo')
+      .mockImplementation((factory) => factory());
+    const useCallbackSpy = vi
+      .spyOn(React, 'useCallback')
+      .mockImplementation((fn) => fn);
+    const useEffectSpy = vi
+      .spyOn(React, 'useEffect')
+      .mockImplementation((effect, deps) => {
+        const idx = effectCursor++;
+        const prevDeps = effectPrevDeps[idx];
+        const depsChanged =
+          !prevDeps ||
+          !deps ||
+          prevDeps.length !== deps.length ||
+          deps.some((d, i) => !Object.is(d, prevDeps[i]));
+        if (depsChanged) {
+          effectPrevDeps[idx] = deps ? [...deps] : undefined;
+          queuedEffects.push(effect as () => void | (() => void));
+        }
+      });
+
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockImplementation((async () =>
+        new Response(JSON.stringify({ email: 'fresh.senior@gmail.com' }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })) as typeof fetch);
+
+    vi.stubGlobal('window', {
+      location: {
+        origin: 'http://localhost:5173',
+        pathname: '/my-data',
+        search: '',
+        hash: '#access_token=ya29.race-safe&scope=https://www.googleapis.com/auth/gmail.readonly%20https://www.googleapis.com/auth/userinfo.email&state=provider%3DGmail',
+        assign,
+      },
+      history: { replaceState },
+    });
+
+    try {
+      const renderPass = () => {
+        stateCursor = 0;
+        refCursor = 0;
+        effectCursor = 0;
+        queuedEffects = [];
+        // Production mount: NO initialSettings and NO initialAudit
+        const tree = MyDataPage({
+          vault: mockVault,
+          onSettingsChange,
+        });
+        const cleanups: Array<() => void> = [];
+        for (const eff of queuedEffects) {
+          const cleanup = eff();
+          if (typeof cleanup === 'function') {
+            cleanups.push(cleanup);
+          }
+        }
+        return { tree, cleanups };
+      };
+
+      // Simulate React StrictMode mount -> cleanup -> remount
+      const first = renderPass();
+      for (const cleanup of first.cleanups) {
+        cleanup();
+      }
+      effectPrevDeps.length = 0;
+      renderPass();
+
+      // Wait for delayed vault reads + callback completion to fully settle
+      await new Promise((r) => setTimeout(r, 140));
+
+      const { tree: finalTree } = renderPass();
+
+      // Connected account badge must reflect the NEW callback account, not stale pre-callback token
+      const badges = findElements(
+        finalTree,
+        (el) => el.props['data-badge'] === 'true'
+      );
+      expect(badges.length).toBeGreaterThan(0);
+      expect(JSON.stringify(badges)).toContain('fresh.senior@gmail.com');
+      expect(JSON.stringify(badges)).not.toContain('old.expired@gmail.com');
+
+      // Email channel toggle must remain ON (not clobbered back to false by stale loadData)
+      const emailToggle = findElements(
+        finalTree,
+        (el) =>
+          el.type === SeniorButton &&
+          Array.isArray(el.props.children) &&
+          el.props.children.join('').includes('Email:')
+      )[0];
+      expect(emailToggle).toBeDefined();
+      expect(emailToggle.props['aria-pressed']).toBe(true);
+      expect((emailToggle.props.children as unknown[]).join('')).toContain(
+        'Email: ON'
+      );
+
+      // Must not double-persist across StrictMode
+      expect(saveOAuthCalls).toBe(1);
+      expect(replaceState).toHaveBeenCalledWith(null, '', '/my-data');
+    } finally {
+      vi.unstubAllGlobals();
+      fetchSpy.mockRestore();
+      useEffectSpy.mockRestore();
+      useCallbackSpy.mockRestore();
+      useMemoSpy.mockRestore();
+      useRefSpy.mockRestore();
+      useStateSpy.mockRestore();
+    }
+  });
+
+  it('Fix 3: Outlook buildCloudLoginRedirectUrl includes both mail.read and user.read scopes and passes validateReadOnlyScopes', () => {
+    const outlookRes = buildCloudLoginRedirectUrl({
+      provider: 'Outlook',
+      clientId: 'ms-client-789',
+      redirectUri: 'http://localhost:5173/my-data',
+    });
+    expect(outlookRes.ok).toBe(true);
+    if (outlookRes.ok) {
+      expect(outlookRes.scopes).toContain(
+        'https://graph.microsoft.com/mail.read'
+      );
+      expect(outlookRes.scopes).toContain(
+        'https://graph.microsoft.com/user.read'
+      );
+      expect(validateReadOnlyScopes(outlookRes.scopes).ok).toBe(true);
+
+      const parsed = new URL(outlookRes.url);
+      const scopeList = (parsed.searchParams.get('scope') ?? '').split(/\s+/);
+      expect(scopeList).toContain('https://graph.microsoft.com/mail.read');
+      expect(scopeList).toContain('https://graph.microsoft.com/user.read');
+    }
+  });
+
+  it('Fix 4: syncEmailsFromRelay returns ok: false with plain-language error when cloud provider returns 5xx/network error and relay yields 0 items', async () => {
+    const onSettings = {
+      ...createDefaultSettings(),
+      channels: { ...createDefaultSettings().channels, email: true },
+    };
+
+    const makeMockVault = (provider: 'Gmail' | 'Outlook'): any => ({
+      listOAuthTokens: async () => ({
+        ok: true,
+        value: [
+          {
+            id: 'email-account-primary',
+            account:
+              provider === 'Gmail'
+                ? 'mary.tan@gmail.com'
+                : 'ah.kow@outlook.com',
+            provider,
+            token: 'live-cloud-token',
+          },
+        ],
+      }),
+      listItems: async () => ({ ok: true, value: [] }),
+      putItem: async () => ({ ok: true, value: undefined }),
+      appendAudit: async () => ({ ok: true, value: undefined }),
+    });
+
+    // Case A: Gmail HTTP 500 + relay 200 { items: [] }
+    const gmail500Fetch = (async (input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.startsWith('https://gmail.googleapis.com/')) {
+        return new Response('Internal Server Error', { status: 500 });
+      }
+      if (url.includes('/api/ingest/pull')) {
+        return new Response(JSON.stringify({ items: [] }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      return new Response('Not found', { status: 404 });
+    }) as typeof fetch;
+
+    const gmailRes = await syncEmailsFromRelay({
+      vault: makeMockVault('Gmail'),
+      settings: onSettings,
+      fetchFn: gmail500Fetch,
+    });
+    expect(gmailRes.ok).toBe(false);
+    if (!gmailRes.ok) {
+      expect(gmailRes.errorMessage).toBe(
+        'We could not check for new emails right now. Please try again.'
+      );
+      expect(gmailRes.errorMessage).not.toMatch(BANNED_JARGON);
+    }
+
+    // Case B: Outlook network error + relay 200 { items: [] }
+    const outlookNetworkErrFetch = (async (input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.startsWith('https://graph.microsoft.com/')) {
+        throw new Error('network down');
+      }
+      if (url.includes('/api/ingest/pull')) {
+        return new Response(JSON.stringify({ items: [] }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      return new Response('Not found', { status: 404 });
+    }) as typeof fetch;
+
+    const outlookRes = await syncEmailsFromRelay({
+      vault: makeMockVault('Outlook'),
+      settings: onSettings,
+      fetchFn: outlookNetworkErrFetch,
+    });
+    expect(outlookRes.ok).toBe(false);
+    if (!outlookRes.ok) {
+      expect(outlookRes.errorMessage).toBe(
+        'We could not check for new emails right now. Please try again.'
+      );
+      expect(outlookRes.errorMessage).not.toMatch(BANNED_JARGON);
+    }
   });
 });
