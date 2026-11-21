@@ -126,6 +126,12 @@ function getRegistrablePrimarySlug(domain: string): string {
   return primaryLabel.replace(/[^a-z0-9]/g, '');
 }
 
+const OFFICIAL_ORG_DOMAIN_ALIASES = new Map<string, readonly string[]>([
+  ['maybank', ['maybank2u']],
+  ['cimb', ['cimbclicks']],
+  ['lhdn', ['hasil']],
+]);
+
 function domainMatchesOrg(domain: string, claimedOrg: string): boolean {
   const orgSlug = claimedOrg.toLowerCase().replace(/[^a-z0-9]/g, '');
   if (orgSlug.length === 0) {
@@ -137,12 +143,8 @@ function domainMatchesOrg(domain: string, claimedOrg: string): boolean {
     return true;
   }
 
-  // Allow common official short suffix variants like maybank -> maybank2u
-  if (
-    orgSlug.length >= 3 &&
-    primarySlug.startsWith(orgSlug) &&
-    /^[0-9a-z]{0,2}$/.test(primarySlug.slice(orgSlug.length))
-  ) {
+  const aliases = OFFICIAL_ORG_DOMAIN_ALIASES.get(orgSlug);
+  if (aliases && aliases.includes(primarySlug)) {
     return true;
   }
 

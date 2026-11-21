@@ -9,7 +9,7 @@ export type MediaCheckOutcome = {
 const FORBIDDEN_CERTAINTY_PATTERN =
   /100%\s*real|certainly\s+authentic|guaranteed\s+real|proven\s+real/gi;
 
-function cleanNonEmpty(value?: string): string | undefined {
+function cleanNonEmpty(value: string | undefined, fallback: string): string | undefined {
   if (typeof value !== 'string') {
     return undefined;
   }
@@ -17,12 +17,12 @@ function cleanNonEmpty(value?: string): string | undefined {
     return undefined;
   }
   const sanitized = value.replace(FORBIDDEN_CERTAINTY_PATTERN, '').trim();
-  return sanitized.length > 0 ? sanitized : 'Camera metadata';
+  return sanitized.length > 0 ? sanitized : fallback;
 }
 
 export function mediaResult(p: Provenance): MediaCheckOutcome {
-  const c2pa = cleanNonEmpty(p.c2paAiGenerator);
-  const generator = cleanNonEmpty(p.generatorSignature);
+  const c2pa = cleanNonEmpty(p.c2paAiGenerator, 'AI metadata');
+  const generator = cleanNonEmpty(p.generatorSignature, 'AI metadata');
 
   // Precedence 1: AI signal always takes priority over Camera EXIF
   if (c2pa !== undefined || generator !== undefined) {
@@ -34,7 +34,7 @@ export function mediaResult(p: Provenance): MediaCheckOutcome {
   }
 
   // Precedence 2: Camera EXIF without AI signal
-  const cameraExif = cleanNonEmpty(p.cameraExif);
+  const cameraExif = cleanNonEmpty(p.cameraExif, 'Camera metadata');
   if (cameraExif !== undefined) {
     return {
       result: 'Camera signal found',

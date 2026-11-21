@@ -60,20 +60,23 @@ function isJpeg(bytes: Uint8Array): boolean {
 
 function extractPngMetadataText(bytes: Uint8Array): string {
   const decoder = new TextDecoder('latin1');
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const parts: string[] = [];
   let offset = 8;
 
   while (offset + 12 <= bytes.length) {
-    const length =
-      ((bytes[offset] << 24) >>> 0) |
-      (bytes[offset + 1] << 16) |
-      (bytes[offset + 2] << 8) |
-      bytes[offset + 3];
+    const length = view.getUint32(offset, false);
     const type = decoder.decode(bytes.subarray(offset + 4, offset + 8));
     const dataStart = offset + 8;
     const dataEnd = dataStart + length;
+    const nextOffset = dataEnd + 4;
 
-    if (dataEnd + 4 > bytes.length) {
+    if (
+      length < 0 ||
+      dataEnd < dataStart ||
+      nextOffset <= offset ||
+      nextOffset > bytes.length
+    ) {
       break;
     }
 
@@ -88,7 +91,7 @@ function extractPngMetadataText(bytes: Uint8Array): string {
       parts.push(decoder.decode(bytes.subarray(dataStart, dataEnd)));
     }
 
-    offset = dataEnd + 4;
+    offset = nextOffset;
     if (type === 'IEND') {
       break;
     }
@@ -102,34 +105,46 @@ function extractJpegMetadataText(bytes: Uint8Array): string {
   const parts: string[] = [];
   let offset = 2;
 
-  while (offset + 4 <= bytes.length) {
+  while (offset + 2 <= bytes.length) {
     if (bytes[offset] !== 0xff) {
       break;
     }
-    const marker = bytes[offset + 1];
+    // Skip any consecutive 0xff fill bytes allowed before a JPEG marker
+    let markerPos = offset + 1;
+    while (markerPos < bytes.length && bytes[markerPos] === 0xff) {
+      markerPos += 1;
+    }
+    if (markerPos >= bytes.length) {
+      break;
+    }
+    const marker = bytes[markerPos];
     // SOS or EOI terminates header metadata segments
     if (marker === 0xda || marker === 0xd9) {
       break;
     }
     // Standalone markers without length
     if (marker === 0x00 || marker === 0x01 || (marker >= 0xd0 && marker <= 0xd7)) {
-      offset += 2;
+      offset = markerPos + 1;
       continue;
     }
 
-    const segmentLength = (bytes[offset + 2] << 8) | bytes[offset + 3];
-    if (segmentLength < 2 || offset + 2 + segmentLength > bytes.length) {
+    if (markerPos + 3 > bytes.length) {
+      break;
+    }
+    const segmentLength = (bytes[markerPos + 1] << 8) | bytes[markerPos + 2];
+    const nextOffset = markerPos + 1 + segmentLength;
+    if (segmentLength < 2 || nextOffset > bytes.length || nextOffset <= offset) {
       break;
     }
 
     // APP0..APP15 (0xE0..0xEF) and COM (0xFE)
     if ((marker >= 0xe0 && marker <= 0xef) || marker === 0xfe) {
       parts.push(
-        decoder.decode(bytes.subarray(offset + 4, offset + 2 + segmentLength))
+        decoder.decode(bytes.subarray(markerPos + 3, nextOffset))
       );
     }
 
-    offset += 2 + segmentLength;
+    offset = nextOffset;
   }
 
   return parts.join('\n');

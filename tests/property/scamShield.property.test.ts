@@ -252,6 +252,13 @@ describe('Scam Shield property tests', () => {
             expect(implicitVerdict.flags).toContain('domain-mismatch');
           }
 
+          // Lookalike short-suffix spoofed domains must also trigger domain-mismatch
+          const lookalikeVerdict = checkText('Open https://maybank-my.xyz/login', {
+            claimedOrg: 'Maybank',
+          });
+          expect(lookalikeVerdict.value).not.toBe('safe');
+          expect(lookalikeVerdict.flags).toContain('domain-mismatch');
+
           // Never safe
           expect(verdict.value).not.toBe('safe');
           expect(['caution', 'danger']).toContain(verdict.value);

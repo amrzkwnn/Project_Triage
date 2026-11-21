@@ -37,6 +37,99 @@ const CAMERA_EXIF_VALUES = [
   'Exif',
 ] as const;
 
+function buildPngWithChunk(chunkType: string, payloadText: string, padBeforeMiddle = 0): Uint8Array {
+  const encoder = new TextEncoder();
+  const sig = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  const makeChunk = (type: string, data: Uint8Array): Uint8Array => {
+    const out = new Uint8Array(12 + data.length);
+    const view = new DataView(out.buffer);
+    view.setUint32(0, data.length, false);
+    out.set(encoder.encode(type).subarray(0, 4), 4);
+    out.set(data, 8);
+    // 4-byte dummy CRC
+    return out;
+  };
+
+  const chunks: Uint8Array[] = [sig];
+  if (padBeforeMiddle > 0) {
+    chunks.push(makeChunk('IDAT', new Uint8Array(padBeforeMiddle)));
+  }
+  chunks.push(makeChunk(chunkType, encoder.encode(payloadText)));
+  if (padBeforeMiddle > 0) {
+    chunks.push(makeChunk('IDAT', new Uint8Array(padBeforeMiddle)));
+  }
+  chunks.push(makeChunk('IEND', new Uint8Array(0)));
+
+  const total = chunks.reduce((sum, c) => sum + c.length, 0);
+  const result = new Uint8Array(total);
+  let pos = 0;
+  for (const c of chunks) {
+    result.set(c, pos);
+    pos += c.length;
+  }
+  return result;
+}
+
+function buildJpegWithApp1(
+  payloadText: string,
+  opts?: { extraFillBytes?: number; padAround?: number }
+): Uint8Array {
+  const encoder = new TextEncoder();
+  const payload = encoder.encode(payloadText);
+  const parts: Uint8Array[] = [new Uint8Array([0xff, 0xd8])];
+
+  if (opts?.padAround && opts.padAround > 0) {
+    // APP2 padding segment (max 65533 bytes per segment)
+    let remaining = opts.padAround;
+    while (remaining > 0) {
+      const segDataLen = Math.min(remaining, 60000);
+      const seg = new Uint8Array(4 + segDataLen);
+      seg[0] = 0xff;
+      seg[1] = 0xe2;
+      const view = new DataView(seg.buffer);
+      view.setUint16(2, segDataLen + 2, false);
+      parts.push(seg);
+      remaining -= segDataLen;
+    }
+  }
+
+  const fillCount = opts?.extraFillBytes ?? 0;
+  const app1 = new Uint8Array(fillCount + 4 + payload.length);
+  for (let i = 0; i < fillCount + 1; i += 1) {
+    app1[i] = 0xff;
+  }
+  app1[fillCount + 1] = 0xe1;
+  const app1View = new DataView(app1.buffer, fillCount + 2, 2);
+  app1View.setUint16(0, payload.length + 2, false);
+  app1.set(payload, fillCount + 4);
+  parts.push(app1);
+
+  if (opts?.padAround && opts.padAround > 0) {
+    let remaining = opts.padAround;
+    while (remaining > 0) {
+      const segDataLen = Math.min(remaining, 60000);
+      const seg = new Uint8Array(4 + segDataLen);
+      seg[0] = 0xff;
+      seg[1] = 0xe2;
+      const view = new DataView(seg.buffer);
+      view.setUint16(2, segDataLen + 2, false);
+      parts.push(seg);
+      remaining -= segDataLen;
+    }
+  }
+
+  parts.push(new Uint8Array([0xff, 0xd9]));
+
+  const total = parts.reduce((sum, p) => sum + p.length, 0);
+  const out = new Uint8Array(total);
+  let pos = 0;
+  for (const p of parts) {
+    out.set(p, pos);
+    pos += p.length;
+  }
+  return out;
+}
+
 describe('Media Provenance Check and Photo Helper property tests', () => {
   // Feature: senior-digital-companion, Property 33: Media check result precedence
   it('Property 33: enforces AI > Camera EXIF > Cannot tell precedence and never claims 100% Real', async () => {
@@ -104,20 +197,19 @@ describe('Media Provenance Check and Photo Helper property tests', () => {
       { numRuns: 100 }
     );
 
-    // Also verify inspectProvenance binary scanner detects markers and honors precedence
-    const encoder = new TextEncoder();
+    // Also verify inspectProvenance binary scanner detects markers across valid JPEG APP1 and PNG chunks
     await fc.assert(
       fc.asyncProperty(
+        fc.constantFrom('jpeg', 'png'),
         fc.option(fc.constantFrom(...AI_C2PA_MARKERS), { nil: undefined }),
         fc.option(fc.constantFrom(...AI_GEN_SIGNATURES), { nil: undefined }),
         fc.option(fc.constantFrom(...CAMERA_EXIF_VALUES), { nil: undefined }),
-        async (c2pa, gen, exif) => {
-          const header = new Uint8Array([0xff, 0xd8, 0xff, 0xe1]);
+        async (format, c2pa, gen, exif) => {
           const bodyText = [c2pa, gen, exif].filter(Boolean).join(' | ');
-          const bodyBytes = encoder.encode(bodyText);
-          const payload = new Uint8Array(header.length + bodyBytes.length);
-          payload.set(header, 0);
-          payload.set(bodyBytes, header.length);
+          const payload =
+            format === 'png'
+              ? buildPngWithChunk('tEXt', bodyText)
+              : buildJpegWithApp1(bodyText);
           const snapshot = new Uint8Array(payload);
 
           const parsed = await inspectProvenance(payload);
@@ -136,6 +228,49 @@ describe('Media Provenance Check and Photo Helper property tests', () => {
       ),
       { numRuns: 100 }
     );
+  });
+
+  it('Property 33 regression: parses PNG iTXt/tEXt chunks, JPEG APP1 with fill bytes, AI fallback label, and malformed high-bit PNG chunk lengths safely', async () => {
+    // Valid PNG iTXt chunk placed in the middle beyond head/tail 256KB scan window
+    const largePng = buildPngWithChunk('iTXt', 'c2pa.ai_generated Midjourney', 270_000);
+    const largePngProv = await inspectProvenance(largePng);
+    expect(largePngProv.c2paAiGenerator).toBe('c2pa.ai_generated');
+    expect(largePngProv.generatorSignature).toBe('Midjourney');
+    expect(mediaResult(largePngProv).result).toBe('AI signal found');
+
+    // Valid JPEG APP1 segment preceded by 0xff fill bytes placed beyond 256KB scan window
+    const largeJpeg = buildJpegWithApp1('Exif Apple iPhone', {
+      extraFillBytes: 2,
+      padAround: 270_000,
+    });
+    const largeJpegProv = await inspectProvenance(largeJpeg);
+    expect(largeJpegProv.cameraExif).toBe('Apple iPhone');
+    expect(mediaResult(largeJpegProv).result).toBe('Camera signal found');
+
+    // AI fallback label when forbidden certainty text is stripped from AI field
+    const sanitizedAi = mediaResult({ c2paAiGenerator: '100% Real' });
+    expect(sanitizedAi.result).toBe('AI signal found');
+    expect(sanitizedAi.signalName).toBe('AI metadata');
+
+    // Malformed PNG with high-bit chunk length 0xfffffff4 (-12 signed int32) must terminate cleanly
+    const malformedNegativeTwelve = new Uint8Array([
+      0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+      0xff, 0xff, 0xff, 0xf4,
+      0x74, 0x45, 0x58, 0x74,
+      0x00, 0x00, 0x00, 0x00,
+    ]);
+    const malformedRes1 = await inspectProvenance(malformedNegativeTwelve);
+    expect(mediaResult(malformedRes1).result).toBe('Cannot tell');
+
+    // Malformed PNG with high-bit chunk length 0x80000000
+    const malformedHighBit = new Uint8Array([
+      0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+      0x80, 0x00, 0x00, 0x00,
+      0x74, 0x45, 0x58, 0x74,
+      0x00, 0x00, 0x00, 0x00,
+    ]);
+    const malformedRes2 = await inspectProvenance(malformedHighBit);
+    expect(mediaResult(malformedRes2).result).toBe('Cannot tell');
   });
 
   // Feature: senior-digital-companion, Property 34: Saved copy naming
