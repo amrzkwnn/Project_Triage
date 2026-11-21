@@ -2,6 +2,13 @@
 
 import React, { useEffect, useState } from 'react';
 import { AlertTriangle, WifiOff } from 'lucide-react';
+import { PhoneFrame } from '@/components/PhoneFrame';
+import {
+  DemoShell,
+  SHELL_RESERVED,
+} from '@/components/presentation/DemoShell';
+import { TabBar } from '@/components/TabBar';
+import { ToastProvider } from '@/components/Toast';
 import type { Vault } from '@/lib/vault/schema';
 import { createVault } from '@/lib/vault/store';
 import './globals.css';
@@ -42,6 +49,7 @@ export type AppShellProps = {
   storeErrorMessage?: string;
   storeProbe?: StoreProbe;
   onNavigate?: (href: string) => void;
+  activePath?: string;
 };
 
 export function AppShell({
@@ -51,6 +59,7 @@ export function AppShell({
   storeErrorMessage,
   storeProbe,
   onNavigate,
+  activePath,
 }: AppShellProps) {
   const [browserOffline, setBrowserOffline] = useState(false);
   const [detectedStoreUnavailable, setDetectedStoreUnavailable] =
@@ -115,75 +124,94 @@ export function AppShell({
   };
 
   return (
-    <div className="min-h-screen bg-[#FAF9F6] text-[#111827]">
-      <a href="#main-content" className="skip-link">
-        Skip to main content
-      </a>
-
-      <header className="border-b-2 border-[#111827] bg-white">
-        <div className="app-container flex flex-wrap items-center justify-between gap-4 py-4">
-          <a
-            href="/"
-            onClick={(e) => handleNavClick(e, '/')}
-            className="inline-flex min-h-[56px] items-center text-[22px] font-bold text-[#111827] no-underline"
-          >
-            My Daily Helper
-          </a>
-
-          <nav aria-label="Primary" className="flex flex-wrap items-center gap-3">
-            <a
-              href="/"
-              onClick={(e) => handleNavClick(e, '/')}
-              className="inline-flex min-h-[56px] min-w-[56px] items-center justify-center rounded-xl border-2 border-[#111827] bg-white px-4 py-2 text-[18px] font-semibold text-[#111827] no-underline hover:bg-[#F3F4F6]"
-            >
-              Home
+    <DemoShell>
+      <PhoneFrame reserved={SHELL_RESERVED}>
+        <ToastProvider>
+          <div className="relative flex h-full min-h-0 flex-col bg-canvas text-ink">
+            <a href="#main-content" className="skip-link">
+              Skip to main content
             </a>
-            <a
-              href="/my-data"
-              onClick={(e) => handleNavClick(e, '/my-data')}
-              className="inline-flex min-h-[56px] min-w-[56px] items-center justify-center rounded-xl border-2 border-[#0F766E] bg-[#F0FDFA] px-4 py-2 text-[18px] font-semibold text-[#115E59] no-underline hover:bg-[#CCFBF1]"
-            >
-              My Data
-            </a>
-          </nav>
-        </div>
-      </header>
 
-      <div className="app-container space-y-4 pt-4">
-        {offline ? (
-          <div
-            role="status"
-            aria-live="polite"
-            data-badge="true"
-            className="flex items-start gap-3 rounded-xl border-2 border-[#D97706] bg-[#FFFBEB] p-4 text-[18px] font-semibold text-[#92400E]"
-          >
-            <span aria-hidden="true" className="mt-0.5 inline-flex shrink-0">
-              <WifiOff size={22} />
-            </span>
-            <span>
-              You are offline. You can still view everything saved on this device.
-            </span>
+            <header className="chrome shrink-0 border-b border-line bg-white/90 px-4 py-2.5 backdrop-blur-md">
+              <div className="flex items-center justify-between gap-2">
+                <a
+                  href="/"
+                  onClick={(e) => handleNavClick(e, '/')}
+                  className="inline-flex min-h-[56px] items-center text-[18px] font-bold tracking-tight text-ink no-underline"
+                >
+                  My Daily Helper
+                </a>
+
+                <nav aria-label="Primary" className="flex items-center gap-2">
+                  <a
+                    href="/"
+                    onClick={(e) => handleNavClick(e, '/')}
+                    className="pressable inline-flex min-h-[56px] min-w-[56px] items-center justify-center rounded-chip border border-line bg-white px-3 py-1.5 text-[14px] font-semibold text-ink no-underline shadow-card hover:bg-canvas"
+                  >
+                    Home
+                  </a>
+                  <a
+                    href="/my-data"
+                    onClick={(e) => handleNavClick(e, '/my-data')}
+                    className="pressable inline-flex min-h-[56px] min-w-[56px] items-center justify-center rounded-chip border border-brand-soft bg-brand-wash px-3 py-1.5 text-[14px] font-semibold text-brand-deep no-underline shadow-card hover:bg-brand-soft"
+                  >
+                    My Data
+                  </a>
+                </nav>
+              </div>
+            </header>
+
+            <div className="app-scroll min-h-0 flex-1 bg-canvas px-5 pb-6 pt-3">
+              {(offline || isStoreUnavailable) && (
+                <div className="mb-4 space-y-3">
+                  {offline ? (
+                    <div
+                      role="status"
+                      aria-live="polite"
+                      data-badge="true"
+                      className="flex items-start gap-3 rounded-card border-2 border-[#D97706] bg-[#FFFBEB] p-3.5 text-[15px] font-semibold text-[#92400E] shadow-card"
+                    >
+                      <span
+                        aria-hidden="true"
+                        className="mt-0.5 inline-flex shrink-0"
+                      >
+                        <WifiOff size={20} />
+                      </span>
+                      <span>
+                        You are offline. You can still view everything saved on
+                        this device.
+                      </span>
+                    </div>
+                  ) : null}
+
+                  {isStoreUnavailable ? (
+                    <div
+                      role="alert"
+                      data-badge="true"
+                      className="flex items-start gap-3 rounded-card border-2 border-[#BE123C] bg-[#FFF1F2] p-3.5 text-[15px] font-semibold text-[#881337] shadow-card"
+                    >
+                      <span
+                        aria-hidden="true"
+                        className="mt-0.5 inline-flex shrink-0"
+                      >
+                        <AlertTriangle size={20} />
+                      </span>
+                      <span>{fallbackMessage}</span>
+                    </div>
+                  ) : null}
+                </div>
+              )}
+
+              <main id="main-content" className="space-y-4">
+                {children}
+              </main>
+            </div>
+
+            <TabBar activePath={activePath} onNavigate={onNavigate} />
           </div>
-        ) : null}
-
-        {isStoreUnavailable ? (
-          <div
-            role="alert"
-            data-badge="true"
-            className="flex items-start gap-3 rounded-xl border-2 border-[#BE123C] bg-[#FFF1F2] p-4 text-[18px] font-semibold text-[#881337]"
-          >
-            <span aria-hidden="true" className="mt-0.5 inline-flex shrink-0">
-              <AlertTriangle size={22} />
-            </span>
-            <span>{fallbackMessage}</span>
-          </div>
-        ) : null}
-      </div>
-
-      <main id="main-content" className="app-container py-6">
-        {children}
-      </main>
-    </div>
+        </ToastProvider>
+      </PhoneFrame>
+    </DemoShell>
   );
 }
 

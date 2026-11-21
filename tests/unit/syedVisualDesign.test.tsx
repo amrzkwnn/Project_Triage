@@ -13,6 +13,15 @@ import { StatusLive } from '@/components/StatusLive';
 import { BackToHome } from '@/components/BackToHome';
 import { isValidConfirmation, type Confirmation } from '@/lib/actions/confirmation';
 import { createDefaultSettings } from '@/lib/types';
+import { PhoneFrame } from '@/components/PhoneFrame';
+import { DemoShell } from '@/components/presentation/DemoShell';
+import { TabBar } from '@/components/TabBar';
+import { ToastProvider } from '@/components/Toast';
+import { presentationContent } from '@/lib/presentation/content';
+import { AppShell } from '@/app/layout';
+
+const BANNED_JARGON =
+  /\b(sync|token|api|cache|error code|stack trace|exception|indexeddb|oauth|webhook|regex)\b/i;
 
 function findElements(
   node: React.ReactNode,
@@ -238,5 +247,77 @@ describe('Task 1: Syed Design Tokens and Core Components', () => {
     expect(backHtml).toContain('pressable');
     expect(backHtml).toContain('rounded-full');
     expect(backHtml).toContain('min-h-[56px]');
+  });
+});
+
+describe('Task 2: Syed PhoneFrame, DemoShell, TabBar, and AppShell', () => {
+  it('DemoShell presentation copy contains zero banned technical jargon', () => {
+    const blob = JSON.stringify(presentationContent);
+    expect(blob).not.toMatch(BANNED_JARGON);
+  });
+
+  it('renders DemoShell, PhoneFrame, and TabBar safely under SSR renderToStaticMarkup', () => {
+    const html = renderToStaticMarkup(
+      <DemoShell>
+        <PhoneFrame>
+          <ToastProvider>
+            <div>Inside Phone Screen</div>
+            <TabBar activePath="/calendar" />
+          </ToastProvider>
+        </PhoneFrame>
+      </DemoShell>
+    );
+    expect(html).toContain('phone-body');
+    expect(html).toContain('width:414px;height:868px');
+    expect(html).toContain('Inside Phone Screen');
+    expect(html).toContain('href="/"');
+    expect(html).toContain('href="/inbox"');
+    expect(html).toContain('href="/calendar"');
+    expect(html).toContain('href="/scam-shield"');
+    expect(html).toContain('href="/my-data"');
+    expect(html).toContain('min-h-[56px]');
+    expect(html).toContain(presentationContent.brand.name);
+    expect(html).toContain(presentationContent.problem.heading);
+    expect(html).toContain(presentationContent.solution.heading);
+  });
+
+  it('AppShell wraps children in Syed DemoShell + PhoneFrame + TabBar while preserving landmarks and zero banned jargon', () => {
+    const html = renderToStaticMarkup(
+      <AppShell isOffline storeUnavailable activePath="/">
+        <p>Senior companion content</p>
+      </AppShell>
+    );
+    expect(html).toContain('Skip to main content');
+    expect(html).toContain('phone-body');
+    expect(html).toContain('<header');
+    expect(html).toContain('aria-label="Primary"');
+    expect(html).toContain('<main');
+    expect(html).toContain('id="main-content"');
+    expect(html).toContain('role="status"');
+    expect(html).toContain('role="alert"');
+    expect(html).toContain('Senior companion content');
+    const visible = html.replace(/<svg[\s\S]*?<\/svg>/gi, ' ').replace(/<[^>]+>/g, ' ');
+    expect(visible).not.toMatch(BANNED_JARGON);
+  });
+
+  it('TabBar highlights the active path and delegates clicks to onNavigate', () => {
+    const onNavigate = vi.fn();
+    const tree = TabBar({ activePath: '/inbox', onNavigate });
+    const links = findElements(tree, (el) => el.type === 'a');
+    expect(links).toHaveLength(5);
+
+    const inboxLink = links.find((el) => el.props.href === '/inbox');
+    const calendarLink = links.find((el) => el.props.href === '/calendar');
+    expect(inboxLink).toBeDefined();
+    expect(calendarLink).toBeDefined();
+    expect(String(inboxLink!.props.className)).toContain('text-brand');
+    expect(String(calendarLink!.props.className)).toContain('text-muted');
+
+    const preventDefault = vi.fn();
+    (calendarLink!.props.onClick as (e: { preventDefault: () => void }) => void)({
+      preventDefault,
+    });
+    expect(preventDefault).toHaveBeenCalledTimes(1);
+    expect(onNavigate).toHaveBeenCalledWith('/calendar');
   });
 });

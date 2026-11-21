@@ -93,7 +93,11 @@ export function CompanionApp() {
       break;
   }
 
-  return <AppShell onNavigate={navigate}>{screen}</AppShell>;
+  return (
+    <AppShell activePath={locationState.pathname} onNavigate={navigate}>
+      {screen}
+    </AppShell>
+  );
 }
 
 if (typeof document !== 'undefined') {
