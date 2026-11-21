@@ -33,10 +33,14 @@ import { AiMediaCheckPage } from '@/app/media-check/page';
 import { PhotoHelperPage } from '@/app/photo-helper/page';
 import { MyDataPage } from '@/app/my-data/page';
 import {
+  buildCloudLoginRedirectUrl,
+  completeCloudLoginCallback,
   connectReadOnlyEmailAccount,
+  parseCloudLoginCallback,
   sendSampleEmailToRelay,
   syncEmailsFromRelay,
 } from '@/lib/inbox/emailClient';
+import { EMAIL_RECONNECT_MESSAGE } from '@/lib/inbox/emailChannel';
 import { dispatchApiRequest } from '@/lib/server/viteApiPlugin';
 import { TokenRegistry } from '@/lib/server/auth';
 import { createRateLimiter } from '@/lib/server/rateLimit';
@@ -1095,6 +1099,422 @@ describe('Task 3: Automatic Email Activation UI & Relay Sync', () => {
       useMemoSpy.mockRestore();
       useRefSpy.mockRestore();
       useStateSpy.mockRestore();
+    }
+  });
+});
+
+describe('Task 1: Gmail & Outlook Cloud Sign-In Redirect, Callback, and Fetch', () => {
+  it('buildCloudLoginRedirectUrl returns jargon-free error when clientId is missing and builds implicit read-only URLs for Gmail and Outlook', () => {
+    const missingGmail = buildCloudLoginRedirectUrl({
+      provider: 'Gmail',
+      clientId: '',
+    });
+    expect(missingGmail.ok).toBe(false);
+    if (!missingGmail.ok) {
+      expect(missingGmail.errorMessage).toContain('VITE_GOOGLE_CLIENT_ID');
+      expect(missingGmail.errorMessage).toContain('.env.local');
+      expect(missingGmail.errorMessage).not.toMatch(BANNED_JARGON);
+    }
+
+    const missingOutlook = buildCloudLoginRedirectUrl({
+      provider: 'Outlook',
+      clientId: '',
+    });
+    expect(missingOutlook.ok).toBe(false);
+    if (!missingOutlook.ok) {
+      expect(missingOutlook.errorMessage).toContain('VITE_MICROSOFT_CLIENT_ID');
+      expect(missingOutlook.errorMessage).toContain('.env.local');
+      expect(missingOutlook.errorMessage).not.toMatch(BANNED_JARGON);
+    }
+
+    const gmailRes = buildCloudLoginRedirectUrl({
+      provider: 'Gmail',
+      clientId: 'google-client-123',
+      emailAddress: 'grandma@gmail.com',
+      redirectUri: 'http://localhost:5173/my-data',
+    });
+    expect(gmailRes.ok).toBe(true);
+    if (gmailRes.ok) {
+      const parsed = new URL(gmailRes.url);
+      expect(parsed.origin + parsed.pathname).toBe(
+        'https://accounts.google.com/o/oauth2/v2/auth'
+      );
+      expect(parsed.searchParams.get('response_type')).toBe('token');
+      expect(parsed.searchParams.get('client_id')).toBe('google-client-123');
+      expect(parsed.searchParams.get('scope')).toContain(
+        'https://www.googleapis.com/auth/gmail.readonly'
+      );
+      expect(parsed.searchParams.get('access_type')).toBeNull();
+      expect(parsed.searchParams.get('login_hint')).toBe('grandma@gmail.com');
+      const state = new URLSearchParams(parsed.searchParams.get('state') ?? '');
+      expect(state.get('provider')).toBe('Gmail');
+    }
+
+    const outlookRes = buildCloudLoginRedirectUrl({
+      provider: 'Outlook',
+      clientId: 'ms-client-456',
+      redirectUri: 'http://localhost:5173/my-data',
+    });
+    expect(outlookRes.ok).toBe(true);
+    if (outlookRes.ok) {
+      const parsed = new URL(outlookRes.url);
+      expect(parsed.origin + parsed.pathname).toBe(
+        'https://login.microsoftonline.com/common/oauth2/v2.0/authorize'
+      );
+      expect(parsed.searchParams.get('response_type')).toBe('token');
+      expect(parsed.searchParams.get('client_id')).toBe('ms-client-456');
+      expect(parsed.searchParams.get('scope')).toContain(
+        'https://graph.microsoft.com/mail.read'
+      );
+      expect(parsed.searchParams.get('scope')).not.toContain('offline_access');
+      const state = new URLSearchParams(parsed.searchParams.get('state') ?? '');
+      expect(state.get('provider')).toBe('Outlook');
+    }
+  });
+
+  it('parseCloudLoginCallback parses hash access_token and search code callbacks', () => {
+    const hashParsed = parseCloudLoginCallback(
+      '',
+      '#access_token=ya29.test&scope=https://www.googleapis.com/auth/gmail.readonly%20email&state=provider%3DGmail'
+    );
+    expect(hashParsed).toBeDefined();
+    expect(hashParsed?.provider).toBe('Gmail');
+    expect(hashParsed?.accessToken).toBe('ya29.test');
+    expect(hashParsed?.grantedScopes).toEqual([
+      'https://www.googleapis.com/auth/gmail.readonly',
+      'email',
+    ]);
+    expect(typeof hashParsed?.emailAddress).toBe('string');
+
+    const searchParsed = parseCloudLoginCallback(
+      '?code=ms-code-789&state=provider%3DOutlook%26email%3Dnana%2540outlook.com',
+      ''
+    );
+    expect(searchParsed).toBeDefined();
+    expect(searchParsed?.provider).toBe('Outlook');
+    expect(searchParsed?.accessToken).toBe('ms-code-789');
+    expect(searchParsed?.emailHint).toBe('nana@outlook.com');
+    expect(searchParsed?.emailAddress).toBe('nana@outlook.com');
+
+    expect(parseCloudLoginCallback('', '')).toBeUndefined();
+    expect(parseCloudLoginCallback('?state=provider%3DGmail', '')).toBeUndefined();
+  });
+
+  it('completeCloudLoginCallback rejects write scopes and completes Gmail/Outlook sign-in by fetching user email', async () => {
+    const savedTokens: any[] = [];
+    let savedSettings = createDefaultSettings();
+    const mockVault = {
+      saveOAuthToken: async (rec: any) => {
+        savedTokens.push(rec);
+        return { ok: true as const, value: undefined };
+      },
+      saveSettings: async (next: any) => {
+        savedSettings = next;
+        return { ok: true as const, value: undefined };
+      },
+    };
+
+    const writeRejected = await completeCloudLoginCallback({
+      vault: mockVault,
+      settings: savedSettings,
+      hash: '#access_token=ya29.bad&scope=https://mail.google.com/&state=provider%3DGmail',
+    });
+    expect(writeRejected.ok).toBe(false);
+    if (!writeRejected.ok) {
+      expect(writeRejected.errorMessage).not.toMatch(BANNED_JARGON);
+    }
+    expect(savedTokens).toHaveLength(0);
+    expect(savedSettings.channels.email).toBe(false);
+
+    const googleFetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      expect(url).toBe('https://www.googleapis.com/oauth2/v3/userinfo');
+      expect((init?.headers as Record<string, string>)?.Authorization).toBe(
+        'Bearer ya29.gmail-live'
+      );
+      return new Response(JSON.stringify({ email: 'mary.tan@gmail.com' }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }) as typeof fetch;
+
+    const gmailDone = await completeCloudLoginCallback({
+      vault: mockVault,
+      settings: savedSettings,
+      hash: '#access_token=ya29.gmail-live&scope=https://www.googleapis.com/auth/gmail.readonly%20email&state=provider%3DGmail',
+      fetchFn: googleFetch,
+    });
+    expect(gmailDone.ok).toBe(true);
+    if (gmailDone.ok) {
+      expect(gmailDone.record.provider).toBe('Gmail');
+      expect(gmailDone.record.account).toBe('mary.tan@gmail.com');
+      expect(gmailDone.record.token).toBe('ya29.gmail-live');
+      expect(gmailDone.settings.channels.email).toBe(true);
+      expect(gmailDone.message).not.toMatch(BANNED_JARGON);
+    }
+
+    const outlookFetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      expect(url).toBe('https://graph.microsoft.com/v1.0/me');
+      expect((init?.headers as Record<string, string>)?.Authorization).toBe(
+        'Bearer ms-live-token'
+      );
+      return new Response(
+        JSON.stringify({ mail: null, userPrincipalName: 'ah.kow@outlook.com' }),
+        {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }
+      );
+    }) as typeof fetch;
+
+    const outlookDone = await completeCloudLoginCallback({
+      vault: mockVault,
+      settings: createDefaultSettings(),
+      hash: '#access_token=ms-live-token&scope=https://graph.microsoft.com/mail.read%20openid%20email&state=provider%3DOutlook',
+      fetchFn: outlookFetch,
+    });
+    expect(outlookDone.ok).toBe(true);
+    if (outlookDone.ok) {
+      expect(outlookDone.record.provider).toBe('Outlook');
+      expect(outlookDone.record.account).toBe('ah.kow@outlook.com');
+      expect(outlookDone.record.token).toBe('ms-live-token');
+      expect(outlookDone.settings.channels.email).toBe(true);
+      expect(outlookDone.message).not.toMatch(BANNED_JARGON);
+    }
+  });
+
+  it('syncEmailsFromRelay fetches Outlook messages via Microsoft Graph and ignores unavailable relay when cloud succeeds', async () => {
+    const storedItems: any[] = [];
+    const mockVault: any = {
+      listOAuthTokens: async () => ({
+        ok: true,
+        value: [
+          {
+            id: 'email-account-primary',
+            account: 'ah.kow@outlook.com',
+            provider: 'Outlook',
+            token: 'ms-graph-live-token',
+          },
+        ],
+      }),
+      listItems: async () => ({ ok: true, value: [...storedItems] }),
+      putItem: async (item: any) => {
+        storedItems.push(item);
+        return { ok: true, value: undefined };
+      },
+      appendAudit: async () => ({ ok: true, value: undefined }),
+    };
+
+    const calledUrls: string[] = [];
+    const mockFetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      calledUrls.push(url);
+      if (url.startsWith('https://graph.microsoft.com/v1.0/me/messages')) {
+        expect((init?.headers as Record<string, string>)?.Authorization).toBe(
+          'Bearer ms-graph-live-token'
+        );
+        return new Response(
+          JSON.stringify({
+            value: [
+              {
+                id: 'outlook-msg-1',
+                subject: 'Dental Checkup Confirmation',
+                from: {
+                  emailAddress: {
+                    name: 'Smile Clinic',
+                    address: 'hello@smileclinic.sg',
+                  },
+                },
+                receivedDateTime: '2026-08-10T09:15:00Z',
+                bodyPreview:
+                  'Your dental appointment is on 2026-08-15 at 11:00.',
+              },
+            ],
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+      // Relay unavailable -> should be gracefully ignored because cloud fetch succeeded
+      return new Response('Relay offline', { status: 503 });
+    }) as typeof fetch;
+
+    const onSettings = {
+      ...createDefaultSettings(),
+      channels: { ...createDefaultSettings().channels, email: true },
+    };
+
+    const res = await syncEmailsFromRelay({
+      vault: mockVault,
+      settings: onSettings,
+      fetchFn: mockFetch,
+    });
+    expect(res.ok).toBe(true);
+    if (res.ok) {
+      expect(res.stored).toHaveLength(1);
+      expect(res.stored[0].source).toBe('email');
+      expect(res.stored[0].text).toContain('Dental Checkup Confirmation');
+      expect(res.stored[0].sender).toContain('Smile Clinic');
+      expect(res.message).not.toMatch(BANNED_JARGON);
+    }
+    expect(
+      calledUrls.some((u) =>
+        u.startsWith('https://graph.microsoft.com/v1.0/me/messages')
+      )
+    ).toBe(true);
+  });
+
+  it('syncEmailsFromRelay fetches Gmail messages + metadata and merges with relay items', async () => {
+    const storedItems: any[] = [];
+    const mockVault: any = {
+      listOAuthTokens: async () => ({
+        ok: true,
+        value: [
+          {
+            id: 'email-account-primary',
+            account: 'mary.tan@gmail.com',
+            provider: 'Gmail',
+            token: 'ya29.gmail-live-token',
+          },
+        ],
+      }),
+      listItems: async () => ({ ok: true, value: [...storedItems] }),
+      putItem: async (item: any) => {
+        storedItems.push(item);
+        return { ok: true, value: undefined };
+      },
+      appendAudit: async () => ({ ok: true, value: undefined }),
+    };
+
+    const rt = {
+      tokenRegistry: new TokenRegistry(),
+      rateLimiter: createRateLimiter(),
+      relay: new EncryptedRelayStore(),
+      logger: createSafeLogger(),
+      now: () => Date.now(),
+    };
+
+    const mockFetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.startsWith('https://gmail.googleapis.com/gmail/v1/users/me/messages?')) {
+        expect((init?.headers as Record<string, string>)?.Authorization).toBe(
+          'Bearer ya29.gmail-live-token'
+        );
+        return new Response(
+          JSON.stringify({ messages: [{ id: 'gmail-msg-42' }] }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+      if (
+        url.startsWith(
+          'https://gmail.googleapis.com/gmail/v1/users/me/messages/gmail-msg-42'
+        )
+      ) {
+        return new Response(
+          JSON.stringify({
+            id: 'gmail-msg-42',
+            snippet: 'Reminder: bring your medication list on 2026-08-20 at 14:00.',
+            payload: {
+              headers: [
+                { name: 'From', value: 'Polyclinic <care@polyclinic.sg>' },
+                { name: 'Subject', value: 'Polyclinic Follow-Up' },
+                { name: 'Date', value: 'Mon, 10 Aug 2026 08:30:00 +0000' },
+              ],
+            },
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+      const fullUrl = url.startsWith('http') ? url : `http://localhost:5173${url}`;
+      const res = await dispatchApiRequest(new Request(fullUrl, init), rt);
+      return res ?? new Response('Not found', { status: 404 });
+    }) as typeof fetch;
+
+    await sendSampleEmailToRelay({ fetchFn: mockFetch });
+
+    const onSettings = {
+      ...createDefaultSettings(),
+      channels: { ...createDefaultSettings().channels, email: true },
+    };
+
+    const res = await syncEmailsFromRelay({
+      vault: mockVault,
+      settings: onSettings,
+      fetchFn: mockFetch,
+    });
+    expect(res.ok).toBe(true);
+    if (res.ok) {
+      expect(res.stored).toHaveLength(2);
+      expect(
+        res.stored.some((item) => item.text.includes('Polyclinic Follow-Up'))
+      ).toBe(true);
+      expect(
+        res.stored.some((item) =>
+          item.text.includes('Clinic Appointment Reminder')
+        )
+      ).toBe(true);
+      expect(res.message).not.toMatch(BANNED_JARGON);
+    }
+  });
+
+  it('syncEmailsFromRelay returns reconnectRequired with EMAIL_RECONNECT_MESSAGE on 401/403 without deleting saved items', async () => {
+    const existingSaved: any = {
+      id: 'existing-saved-1',
+      source: 'email',
+      text: 'Previously saved clinic note',
+      attachments: [],
+      receivedAt: '2026-07-01T08:00:00.000Z',
+      group: 'Personal',
+      priority: 'Important',
+      tier: 1,
+      confidence: 0.9,
+      status: 'ok',
+    };
+    const storedItems: any[] = [existingSaved];
+    const mockVault: any = {
+      listOAuthTokens: async () => ({
+        ok: true,
+        value: [
+          {
+            id: 'email-account-primary',
+            account: 'mary.tan@gmail.com',
+            provider: 'Gmail',
+            token: 'expired-token-123',
+          },
+        ],
+      }),
+      listItems: async () => ({ ok: true, value: [...storedItems] }),
+      putItem: async (item: any) => {
+        storedItems.push(item);
+        return { ok: true, value: undefined };
+      },
+      appendAudit: async () => ({ ok: true, value: undefined }),
+    };
+
+    const onSettings = {
+      ...createDefaultSettings(),
+      channels: { ...createDefaultSettings().channels, email: true },
+    };
+
+    for (const status of [401, 403]) {
+      const expiredFetch = (async () =>
+        new Response('Unauthorized', { status })) as typeof fetch;
+
+      const res = await syncEmailsFromRelay({
+        vault: mockVault,
+        settings: onSettings,
+        fetchFn: expiredFetch,
+      });
+      expect(res.ok).toBe(true);
+      if (res.ok) {
+        expect(res.stored).toEqual([]);
+        expect(res.reconnectRequired).toBe(true);
+        expect(res.reconnectMessage).toBe(EMAIL_RECONNECT_MESSAGE);
+        expect(res.message).toBe(EMAIL_RECONNECT_MESSAGE);
+        expect(res.message).not.toMatch(BANNED_JARGON);
+      }
+      expect(storedItems).toHaveLength(1);
+      expect(storedItems[0].id).toBe('existing-saved-1');
     }
   });
 });
