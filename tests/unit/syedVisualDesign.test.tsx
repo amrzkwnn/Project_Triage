@@ -19,6 +19,12 @@ import { TabBar } from '@/components/TabBar';
 import { ToastProvider } from '@/components/Toast';
 import { presentationContent } from '@/lib/presentation/content';
 import { AppShell } from '@/app/layout';
+import { Card } from '@/components/Card';
+import { SectionHeader } from '@/components/SectionHeader';
+import { EmptyState } from '@/components/EmptyState';
+import { FilterChips } from '@/components/FilterChips';
+import { SegmentedControl } from '@/components/SegmentedControl';
+import { MonthCalendar } from '@/components/MonthCalendar';
 
 const BANNED_JARGON =
   /\b(sync|token|api|cache|error code|stack trace|exception|indexeddb|oauth|webhook|regex)\b/i;
@@ -319,5 +325,149 @@ describe('Task 2: Syed PhoneFrame, DemoShell, TabBar, and AppShell', () => {
     });
     expect(preventDefault).toHaveBeenCalledTimes(1);
     expect(onNavigate).toHaveBeenCalledWith('/calendar');
+  });
+});
+
+function extractButtons(html: string): string[] {
+  return html.match(/<button\b[^>]*>[\s\S]*?<\/button>/gi) ?? [];
+}
+
+function stripTags(html: string): string {
+  return html
+    .replace(/<svg[\s\S]*?<\/svg>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+describe('Task 3: Syed Shared UI Primitives', () => {
+  it('MonthCalendar, SegmentedControl, and FilterChips buttons all carry min-h-[56px] and non-empty text labels', () => {
+    const html = renderToStaticMarkup(
+      <div>
+        <FilterChips
+          items={[
+            { id: 'Personal', label: 'Personal', dot: 'bg-teal-500' },
+            { id: 'Family', label: 'Family', dot: 'bg-violet-500' },
+          ]}
+          value="Personal"
+          onChange={() => {}}
+          ariaLabel="Message groups"
+        />
+        <SegmentedControl
+          options={[
+            { id: 'Today', label: 'Today' },
+            { id: 'This Week', label: 'This Week' },
+            { id: 'Month List', label: 'Month List' },
+          ]}
+          value="Today"
+          onChange={() => {}}
+          ariaLabel="Calendar range"
+        />
+        <MonthCalendar
+          selectedDate="2026-07-15"
+          onSelectDate={() => {}}
+          events={[
+            {
+              id: 'ev-1',
+              title: 'Doctor Visit',
+              date: '2026-07-15',
+              time: '10:30',
+              category: 'Medical',
+              createdAt: '2026-07-10T08:00:00.000Z',
+            },
+            {
+              id: 'ev-2',
+              title: 'Family Dinner',
+              date: '2026-07-15',
+              time: '18:00',
+              category: 'Family & Social',
+              createdAt: '2026-07-10T08:00:00.000Z',
+            },
+            {
+              id: 'ev-3',
+              title: 'Morning Walk',
+              date: '2026-07-15',
+              time: '07:30',
+              category: 'Daily Routine',
+              createdAt: '2026-07-10T08:00:00.000Z',
+            },
+            {
+              id: 'ev-4',
+              title: 'Electricity Bill',
+              date: '2026-07-15',
+              time: '12:00',
+              category: 'Bills & Errands',
+              createdAt: '2026-07-10T08:00:00.000Z',
+            },
+          ]}
+        />
+      </div>
+    );
+
+    expect(html).toContain('from-ink to-brand-deep');
+    expect(html).toContain('July 2026');
+    expect(html).toContain('Previous month');
+    expect(html).toContain('Next month');
+    expect(html).toContain('bg-teal-300');
+    expect(html).toContain('bg-violet-300');
+    expect(html).toContain('aria-pressed="true"');
+    expect(html).toContain('aria-pressed="false"');
+
+    const buttons = extractButtons(html);
+    expect(buttons.length).toBeGreaterThan(30);
+    for (const btn of buttons) {
+      expect(btn).toContain('min-h-[56px]');
+      expect(stripTags(btn).length).toBeGreaterThan(0);
+    }
+  });
+
+  it('MonthCalendar falls back to today when given an invalid ISO date string', () => {
+    const html = renderToStaticMarkup(
+      <MonthCalendar
+        selectedDate="not-a-valid-date"
+        onSelectDate={() => {}}
+        events={[]}
+      />
+    );
+    expect(html).toContain('from-ink to-brand-deep');
+    expect(html).toContain('Previous month');
+    expect(html).toContain('Next month');
+  });
+
+  it('Card, SectionHeader, and EmptyState render Syed tokens', () => {
+    const html = renderToStaticMarkup(
+      <div>
+        <SectionHeader
+          id="needs-action-heading"
+          title="Needs action now"
+          count={3}
+          countTone="red"
+        >
+          <span>Right slot</span>
+        </SectionHeader>
+        <SectionHeader title="Brand section" count={2} countTone="brand" />
+        <SectionHeader title="Default section" count={1} countTone="default" />
+        <Card>Card Body</Card>
+        <Card onClick={() => {}}>Clickable Card</Card>
+        <EmptyState
+          icon={<span aria-hidden="true">★</span>}
+          title="All clear"
+          message="Nothing urgent today."
+        />
+      </div>
+    );
+    expect(html).toContain('data-card="true"');
+    expect(html).toContain('rounded-card');
+    expect(html).toContain('shadow-card');
+    expect(html).toContain('pressable');
+    expect(html).toContain('id="needs-action-heading"');
+    expect(html).toContain('Right slot');
+    expect(html).toContain('bg-red-100 text-red-700');
+    expect(html).toContain('bg-brand-soft text-brand-deep');
+    expect(html).toContain('bg-line text-muted');
+    expect(html).toContain('anim-fade-up');
+    expect(html).toContain('bg-brand-wash text-brand');
+    expect(html).toContain('All clear');
+    expect(html).toContain('Nothing urgent today.');
   });
 });
