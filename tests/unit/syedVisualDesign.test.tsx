@@ -27,7 +27,7 @@ import { SegmentedControl } from '@/components/SegmentedControl';
 import { MonthCalendar } from '@/components/MonthCalendar';
 import { HomeHub } from '@/app/page';
 import { CalendarPage } from '@/app/calendar/page';
-import { UnifiedInboxPage } from '@/app/inbox/page';
+import { UnifiedInboxPage, mergeInboxItemsById } from '@/app/inbox/page';
 import { ScamShieldPage } from '@/app/scam-shield/page';
 import { AiMediaCheckPage } from '@/app/media-check/page';
 import { PhotoHelperPage } from '@/app/photo-helper/page';
@@ -907,6 +907,194 @@ describe('Task 3: Automatic Email Activation UI & Relay Sync', () => {
         expect(btn).toContain('min-h-[56px]');
         expect(stripTags(btn).length).toBeGreaterThan(0);
       }
+    }
+  });
+
+  it('UnifiedInboxPage merges vault items by id without clobbering and waits for initial loadData before auto-checking relay emails', async () => {
+    // 1. Pure merge helper preserves prepended items and deduplicates by id
+    const newlyPulled: any = {
+      id: 'email-new-1',
+      source: 'email',
+      text: 'Fresh clinic reminder',
+      attachments: [],
+      receivedAt: '2026-07-20T09:00:00.000Z',
+      group: 'Personal',
+      priority: 'Important',
+      tier: 2,
+      confidence: 0.9,
+      status: 'ok',
+    };
+    const existingVaultItem: any = {
+      id: 'vault-old-1',
+      source: 'smsPaste',
+      text: 'Earlier saved SMS',
+      attachments: [],
+      receivedAt: '2026-07-19T08:00:00.000Z',
+      group: 'Personal',
+      priority: 'Social',
+      tier: 1,
+      confidence: 0.85,
+      status: 'ok',
+    };
+    const merged = mergeInboxItemsById(
+      [newlyPulled],
+      [existingVaultItem, newlyPulled]
+    );
+    expect(merged.map((i) => i.id)).toEqual(['email-new-1', 'vault-old-1']);
+
+    // 2. Mount sequencing: initialSettings.channels.email=true with initialItems=undefined
+    //    must wait for loadData() to settle before calling /api/ingest/pull
+    const rt = {
+      tokenRegistry: new TokenRegistry(),
+      rateLimiter: createRateLimiter(),
+      relay: new EncryptedRelayStore(),
+      logger: createSafeLogger(),
+      now: () => Date.now(),
+    };
+    const fetchCalls: string[] = [];
+    const localFetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = typeof input === 'string' ? input : input.toString();
+      fetchCalls.push(path);
+      const url = typeof input === 'string' ? `http://localhost:5173${input}` : input.toString();
+      const res = await dispatchApiRequest(new Request(url, init), rt);
+      return res ?? new Response('Not found', { status: 404 });
+    }) as typeof fetch;
+
+    const sendRes = await sendSampleEmailToRelay({ fetchFn: localFetch });
+    expect(sendRes.ok).toBe(true);
+    fetchCalls.length = 0;
+
+    const onSettings = {
+      ...createDefaultSettings(),
+      channels: { ...createDefaultSettings().channels, email: true },
+    };
+    const vaultItems: any[] = [existingVaultItem];
+    let resolveListItems!: (val: { ok: true; value: any[] }) => void;
+    const deferredListItems = new Promise<{ ok: true; value: any[] }>((resolve) => {
+      resolveListItems = resolve;
+    });
+    let listCalls = 0;
+    const mockVault: any = {
+      getSettings: async () => ({ ok: true, value: onSettings }),
+      listItems: async () => {
+        listCalls += 1;
+        if (listCalls === 1) return deferredListItems;
+        return { ok: true, value: [...vaultItems] };
+      },
+      listEvents: async () => ({ ok: true, value: [] }),
+      putItem: async (item: any) => {
+        vaultItems.push(item);
+        return { ok: true, value: undefined };
+      },
+      appendAudit: async () => ({ ok: true, value: undefined }),
+    };
+
+    const stateSlots: unknown[] = [];
+    const refSlots: Array<{ current: unknown }> = [];
+    const effectPrevDeps: Array<readonly unknown[] | undefined> = [];
+    let stateCursor = 0;
+    let refCursor = 0;
+    let effectCursor = 0;
+    let queuedEffects: Array<() => void> = [];
+
+    const useStateSpy = vi.spyOn(React, 'useState').mockImplementation(((
+      initialState: unknown
+    ) => {
+      const idx = stateCursor++;
+      if (!(idx in stateSlots)) {
+        stateSlots[idx] =
+          typeof initialState === 'function'
+            ? (initialState as () => unknown)()
+            : initialState;
+      }
+      const setState = (next: unknown) => {
+        stateSlots[idx] =
+          typeof next === 'function'
+            ? (next as (prev: unknown) => unknown)(stateSlots[idx])
+            : next;
+      };
+      return [stateSlots[idx], setState];
+    }) as typeof React.useState);
+
+    const useRefSpy = vi.spyOn(React, 'useRef').mockImplementation(((
+      initialValue: unknown
+    ) => {
+      const idx = refCursor++;
+      if (!(idx in refSlots)) {
+        refSlots[idx] = { current: initialValue };
+      }
+      return refSlots[idx];
+    }) as typeof React.useRef);
+
+    const useMemoSpy = vi
+      .spyOn(React, 'useMemo')
+      .mockImplementation((factory) => factory());
+    const useCallbackSpy = vi
+      .spyOn(React, 'useCallback')
+      .mockImplementation((fn) => fn);
+    const useEffectSpy = vi
+      .spyOn(React, 'useEffect')
+      .mockImplementation((effect, deps) => {
+        const idx = effectCursor++;
+        const prevDeps = effectPrevDeps[idx];
+        const depsChanged =
+          !prevDeps ||
+          !deps ||
+          prevDeps.length !== deps.length ||
+          deps.some((d, i) => !Object.is(d, prevDeps[i]));
+        if (depsChanged) {
+          effectPrevDeps[idx] = deps ? [...deps] : undefined;
+          queuedEffects.push(effect as () => void);
+        }
+      });
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockImplementation(localFetch);
+
+    try {
+      const renderAndRunEffects = () => {
+        stateCursor = 0;
+        refCursor = 0;
+        effectCursor = 0;
+        queuedEffects = [];
+        UnifiedInboxPage({
+          initialSettings: onSettings,
+          vault: mockVault,
+        });
+        for (const eff of queuedEffects) {
+          eff();
+        }
+      };
+
+      // Render 1: loadData starts and is still pending -> /api/ingest/pull MUST NOT fire yet
+      renderAndRunEffects();
+      await Promise.resolve();
+      expect(listCalls).toBe(1);
+      expect(fetchCalls).not.toContain('/api/ingest/pull');
+
+      // Now finish initial loadData() -> merges existingVaultItem & sets initialLoadDone = true
+      resolveListItems({ ok: true, value: [existingVaultItem] });
+      await new Promise((r) => setTimeout(r, 20));
+
+      // Render 2: initialLoadDone is now true -> auto-check fires /api/ingest/pull once
+      renderAndRunEffects();
+      await new Promise((r) => setTimeout(r, 50));
+
+      expect(fetchCalls).toContain('/api/ingest/pull');
+      expect(fetchCalls).toContain('/api/ingest/ack');
+
+      // Items state holds BOTH the newly pulled email AND the existing vault item
+      const itemsState = stateSlots[1] as Array<{ id: string; source: string }>;
+      expect(itemsState).toHaveLength(2);
+      expect(itemsState.some((i) => i.id === 'vault-old-1')).toBe(true);
+      expect(itemsState.some((i) => i.source === 'email')).toBe(true);
+    } finally {
+      fetchSpy.mockRestore();
+      useEffectSpy.mockRestore();
+      useCallbackSpy.mockRestore();
+      useMemoSpy.mockRestore();
+      useRefSpy.mockRestore();
+      useStateSpy.mockRestore();
     }
   });
 });

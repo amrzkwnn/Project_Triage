@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React from 'react';
 import {
   AlertTriangle,
   Calendar,
@@ -157,6 +157,14 @@ const APPLE_SHORTCUT_STEPS = [
     ),
   },
 ] as const;
+
+export function mergeInboxItemsById(
+  prev: readonly InboxItem[],
+  incoming: readonly InboxItem[]
+): InboxItem[] {
+  const seen = new Set(prev.map((item) => item.id));
+  return [...prev, ...incoming.filter((item) => !seen.has(item.id))];
+}
 
 export function evaluateInitialQuery(query: string | undefined): {
   draft?: InboxItemDraft;
@@ -388,30 +396,30 @@ export function UnifiedInboxPage({
   onForwardToScamCheck,
   onForwardToAiImageCheck,
 }: UnifiedInboxPageProps) {
-  const [settings, setSettings] = useState<Settings>(
+  const [settings, setSettings] = React.useState<Settings>(
     initialSettings ?? createDefaultSettings()
   );
-  const [items, setItems] = useState<InboxItem[]>(initialItems ?? []);
-  const [existingEvents, setExistingEvents] = useState<CalendarEvent[]>(
+  const [items, setItems] = React.useState<InboxItem[]>(initialItems ?? []);
+  const [existingEvents, setExistingEvents] = React.useState<CalendarEvent[]>(
     initialEvents ?? []
   );
-  const [activeTab, setActiveTab] = useState<InboxFilterTab>('All');
-  const [showManualForm, setShowManualForm] = useState<boolean>(false);
-  const [pasteSource, setPasteSource] = useState<Channel>('smsPaste');
-  const [pasteSender, setPasteSender] = useState<string>('');
-  const [pasteText, setPasteText] = useState<string>('');
-  const [rxText, setRxText] = useState<string>('');
-  const [expandedOriginalIds, setExpandedOriginalIds] = useState<
+  const [activeTab, setActiveTab] = React.useState<InboxFilterTab>('All');
+  const [showManualForm, setShowManualForm] = React.useState<boolean>(false);
+  const [pasteSource, setPasteSource] = React.useState<Channel>('smsPaste');
+  const [pasteSender, setPasteSender] = React.useState<string>('');
+  const [pasteText, setPasteText] = React.useState<string>('');
+  const [rxText, setRxText] = React.useState<string>('');
+  const [expandedOriginalIds, setExpandedOriginalIds] = React.useState<
     ReadonlySet<string>
   >(() => new Set());
-  const [pendingQueryDraft, setPendingQueryDraft] = useState<
+  const [pendingQueryDraft, setPendingQueryDraft] = React.useState<
     InboxItemDraft | undefined
   >(() => evaluateInitialQuery(initialQuery).draft);
-  const [queryError, setQueryError] = useState<string | undefined>(
+  const [queryError, setQueryError] = React.useState<string | undefined>(
     () => evaluateInitialQuery(initialQuery).error
   );
-  const [statusMessage, setStatusMessage] = useState<string>('');
-  const [actionError, setActionError] = useState<string | undefined>(
+  const [statusMessage, setStatusMessage] = React.useState<string>('');
+  const [actionError, setActionError] = React.useState<string | undefined>(
     initialChannelOffChannel
       ? admit(initialSettings ?? createDefaultSettings(), {
           source: initialChannelOffChannel,
@@ -424,24 +432,31 @@ export function UnifiedInboxPage({
           ).message
       : undefined
   );
-  const [channelOffChannel, setChannelOffChannel] = useState<
+  const [channelOffChannel, setChannelOffChannel] = React.useState<
     Channel | undefined
   >(initialChannelOffChannel);
-  const [pendingCalendarForward, setPendingCalendarForward] = useState<
+  const [pendingCalendarForward, setPendingCalendarForward] = React.useState<
     { item: InboxItem; event: DetectedEvent; isDuplicate: boolean } | undefined
   >(initialPendingCalendarForward);
-  const [pendingFamilyItemId, setPendingFamilyItemId] = useState<
+  const [pendingFamilyItemId, setPendingFamilyItemId] = React.useState<
     string | undefined
   >(undefined);
-  const [isCheckingEmails, setIsCheckingEmails] = useState<boolean>(false);
-  const autoCheckedEmailRef = useRef<boolean>(false);
+  const [isCheckingEmails, setIsCheckingEmails] = React.useState<boolean>(false);
+  const needsInitialLoad =
+    initialSettings === undefined ||
+    initialItems === undefined ||
+    initialEvents === undefined;
+  const [initialLoadDone, setInitialLoadDone] = React.useState<boolean>(
+    !needsInitialLoad
+  );
+  const autoCheckedEmailRef = React.useRef<boolean>(false);
 
-  const resolvedVault = useMemo(
+  const resolvedVault = React.useMemo(
     () => vault ?? (typeof window !== 'undefined' ? createVault() : undefined),
     [vault]
   );
 
-  const runEmailCheck = useCallback(
+  const runEmailCheck = React.useCallback(
     async (
       currentSettings: Settings,
       options?: { silentOnError?: boolean }
@@ -500,36 +515,42 @@ export function UnifiedInboxPage({
     await runEmailCheck(settings, { silentOnError: false });
   };
 
-  const loadData = useCallback(async () => {
-    if (!resolvedVault) return;
-    const [settingsRes, itemsRes, eventsRes] = await Promise.all([
-      resolvedVault.getSettings(),
-      resolvedVault.listItems(),
-      resolvedVault.listEvents(),
-    ]);
-    if (settingsRes.ok) {
-      setSettings(settingsRes.value);
+  const loadData = React.useCallback(async () => {
+    if (!resolvedVault) {
+      setInitialLoadDone(true);
+      return;
     }
-    if (itemsRes.ok) {
-      setItems(itemsRes.value);
-    }
-    if (eventsRes.ok) {
-      setExistingEvents(eventsRes.value);
+    try {
+      const [settingsRes, itemsRes, eventsRes] = await Promise.all([
+        resolvedVault.getSettings(),
+        resolvedVault.listItems(),
+        resolvedVault.listEvents(),
+      ]);
+      if (settingsRes.ok) {
+        setSettings(settingsRes.value);
+      }
+      if (itemsRes.ok) {
+        setItems((prev) => mergeInboxItemsById(prev, itemsRes.value));
+      }
+      if (eventsRes.ok) {
+        setExistingEvents(eventsRes.value);
+      }
+    } finally {
+      setInitialLoadDone(true);
     }
   }, [resolvedVault]);
 
-  useEffect(() => {
-    if (
-      initialSettings === undefined ||
-      initialItems === undefined ||
-      initialEvents === undefined
-    ) {
+  React.useEffect(() => {
+    if (needsInitialLoad) {
       void loadData();
+    } else {
+      setInitialLoadDone(true);
     }
-  }, [initialSettings, initialItems, initialEvents, loadData]);
+  }, [needsInitialLoad, loadData]);
 
-  useEffect(() => {
+  React.useEffect(() => {
     if (
+      initialLoadDone &&
       initialItems === undefined &&
       settings.channels.email &&
       resolvedVault &&
@@ -538,9 +559,9 @@ export function UnifiedInboxPage({
       autoCheckedEmailRef.current = true;
       void runEmailCheck(settings, { silentOnError: true });
     }
-  }, [initialItems, settings, resolvedVault, runEmailCheck]);
+  }, [initialLoadDone, initialItems, settings, resolvedVault, runEmailCheck]);
 
-  useEffect(() => {
+  React.useEffect(() => {
     if (initialQuery !== undefined) {
       const evaluated = evaluateInitialQuery(initialQuery);
       setPendingQueryDraft(evaluated.draft);
@@ -563,7 +584,7 @@ export function UnifiedInboxPage({
     }
   };
 
-  const visibleItems = useMemo(() => {
+  const visibleItems = React.useMemo(() => {
     if (activeTab === 'Promotion') {
       return filterPromotions(items);
     }
