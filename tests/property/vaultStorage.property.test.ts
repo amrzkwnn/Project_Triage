@@ -35,7 +35,7 @@ const settingsArb: fc.Arbitrary<Settings> = fc.record({
     { nil: undefined }
   ),
   checklist: fc.dictionary(
-    fc.string({ minLength: 1, maxLength: 16 }),
+    fc.string({ minLength: 1, maxLength: 16 }).filter((k) => k !== '__proto__'),
     fc.boolean(),
     { maxKeys: 5 }
   ),
