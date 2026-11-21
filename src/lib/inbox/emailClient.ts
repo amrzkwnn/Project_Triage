@@ -113,6 +113,139 @@ export async function connectReadOnlyEmailAccount(params: {
   };
 }
 
+function readEnvVar(name: string): string | undefined {
+  try {
+    const metaEnv = (
+      import.meta as unknown as { env?: Record<string, string | undefined> }
+    ).env;
+    const val = metaEnv?.[name]?.trim();
+    return val && val.length > 0 ? val : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export function buildCloudLoginRedirectUrl(params: {
+  provider: EmailProvider;
+  emailAddress?: string;
+  clientId?: string;
+  redirectUri?: string;
+}):
+  | { ok: true; url: string; scopes: readonly string[] }
+  | { ok: false; errorMessage: string } {
+  const scopes =
+    params.provider === 'Gmail'
+      ? (['https://www.googleapis.com/auth/gmail.readonly', 'openid', 'email'] as const)
+      : ([
+          'https://graph.microsoft.com/mail.read',
+          'openid',
+          'email',
+          'offline_access',
+        ] as const);
+
+  const scopeValidation = validateReadOnlyScopes(scopes);
+  if (!scopeValidation.ok) {
+    return {
+      ok: false,
+      errorMessage: scopeValidation.error.message,
+    };
+  }
+
+  const resolvedClientId =
+    params.clientId?.trim() ||
+    (params.provider === 'Gmail'
+      ? readEnvVar('VITE_GOOGLE_CLIENT_ID')
+      : readEnvVar('VITE_MICROSOFT_CLIENT_ID'));
+
+  if (!resolvedClientId) {
+    return {
+      ok: false,
+      errorMessage: `To open the ${params.provider} cloud sign-in screen, add VITE_${params.provider === 'Gmail' ? 'GOOGLE' : 'MICROSOFT'}_CLIENT_ID to your .env file first, or tap Connect Read-Only Email.`,
+    };
+  }
+
+  const origin =
+    typeof window !== 'undefined' && window.location?.origin
+      ? window.location.origin
+      : 'http://localhost:5173';
+  const redirectUri = params.redirectUri?.trim() || `${origin}/my-data`;
+  const trimmedEmail = params.emailAddress?.trim() ?? '';
+  const statePayload = new URLSearchParams({
+    provider: params.provider,
+    ...(trimmedEmail.length > 0 ? { email: trimmedEmail } : {}),
+  }).toString();
+
+  if (params.provider === 'Gmail') {
+    const query = new URLSearchParams({
+      client_id: resolvedClientId,
+      redirect_uri: redirectUri,
+      response_type: 'code',
+      scope: scopes.join(' '),
+      access_type: 'offline',
+      prompt: 'consent',
+      state: statePayload,
+      ...(trimmedEmail.length > 0 ? { login_hint: trimmedEmail } : {}),
+    });
+    return {
+      ok: true,
+      url: `https://accounts.google.com/o/oauth2/v2/auth?${query.toString()}`,
+      scopes,
+    };
+  }
+
+  const query = new URLSearchParams({
+    client_id: resolvedClientId,
+    redirect_uri: redirectUri,
+    response_type: 'code',
+    scope: scopes.join(' '),
+    prompt: 'select_account',
+    state: statePayload,
+    ...(trimmedEmail.length > 0 ? { login_hint: trimmedEmail } : {}),
+  });
+  return {
+    ok: true,
+    url: `https://login.microsoftonline.com/common/oauth2/v2/authorize?${query.toString()}`,
+    scopes,
+  };
+}
+
+export function parseCloudLoginCallback(search: string):
+  | {
+      code: string;
+      provider: EmailProvider;
+      emailAddress: string;
+    }
+  | undefined {
+  if (!search || search.trim().length === 0) {
+    return undefined;
+  }
+  const params = new URLSearchParams(
+    search.startsWith('?') ? search.slice(1) : search
+  );
+  const code = params.get('code')?.trim();
+  if (!code) {
+    return undefined;
+  }
+  const rawState = params.get('state') ?? '';
+  const stateParams = new URLSearchParams(rawState);
+  const rawProvider = stateParams.get('provider');
+  const provider: EmailProvider =
+    rawProvider === 'Outlook' ? 'Outlook' : 'Gmail';
+  const emailFromState = stateParams.get('email')?.trim();
+  const fallbackEmail =
+    provider === 'Outlook' ? 'connected.user@outlook.com' : 'connected.user@gmail.com';
+  const emailAddress =
+    emailFromState && isValidEmailAddress(emailFromState)
+      ? emailFromState
+      : fallbackEmail;
+
+  return {
+    code,
+    provider,
+    emailAddress,
+  };
+}
+
 export async function sendSampleEmailToRelay(params?: {
   fetchFn?: typeof fetch;
   bearerToken?: string;

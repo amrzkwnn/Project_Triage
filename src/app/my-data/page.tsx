@@ -18,7 +18,9 @@ import { BackToHome } from '@/components/BackToHome';
 import { SeniorButton } from '@/components/SeniorButton';
 import { StatusLive } from '@/components/StatusLive';
 import {
+  buildCloudLoginRedirectUrl,
   connectReadOnlyEmailAccount,
+  parseCloudLoginCallback,
   sendSampleEmailToRelay,
   syncEmailsFromRelay,
   type EmailProvider,
@@ -147,6 +149,38 @@ export function MyDataPage({
     }
   }, [initialSettings, initialAudit, loadData]);
 
+  useEffect(() => {
+    if (typeof window === 'undefined' || !window.location?.search) {
+      return;
+    }
+    const callbackData = parseCloudLoginCallback(window.location.search);
+    if (!callbackData) {
+      return;
+    }
+    setEmailInput(callbackData.emailAddress);
+    setEmailProvider(callbackData.provider);
+    void connectReadOnlyEmailAccount({
+      vault: resolvedVault,
+      settings,
+      emailAddress: callbackData.emailAddress,
+      provider: callbackData.provider,
+    }).then((res) => {
+      if (res.ok) {
+        setConnectedAccount(res.record);
+        setSettings(res.settings);
+        onSettingsChange?.(res.settings);
+        setEmailNotice(res.message);
+        setStatusMessage(res.message);
+      }
+      try {
+        window.history.replaceState(null, '', window.location.pathname);
+      } catch {
+        // ignore history error
+      }
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const orderedAudit = useMemo(
     () => listAuditNewestFirst(auditEntries),
     [auditEntries]
@@ -217,6 +251,23 @@ export function MyDataPage({
     onSettingsChange?.(res.settings);
     setEmailNotice(res.message);
     setStatusMessage(res.message);
+  };
+
+  const handleCloudLoginRedirect = () => {
+    setEmailError(undefined);
+    setEmailNotice(undefined);
+    const built = buildCloudLoginRedirectUrl({
+      provider: emailProvider,
+      emailAddress: emailInput,
+    });
+    if (!built.ok) {
+      setEmailError(built.errorMessage);
+      setStatusMessage(built.errorMessage);
+      return;
+    }
+    if (typeof window !== 'undefined') {
+      window.location.assign(built.url);
+    }
   };
 
   const handleSendTestEmail = async () => {
@@ -599,13 +650,23 @@ export function MyDataPage({
               </select>
             </div>
 
-            <SeniorButton
-              variant="primary"
-              icon={<Mail size={20} />}
-              onClick={() => void handleConnectEmail()}
-            >
-              Connect Read-Only Email
-            </SeniorButton>
+            <div className="flex flex-wrap gap-3">
+              <SeniorButton
+                variant="primary"
+                icon={<Mail size={20} />}
+                onClick={() => void handleConnectEmail()}
+              >
+                Connect Read-Only Email
+              </SeniorButton>
+
+              <SeniorButton
+                variant="secondary"
+                icon={<Mail size={20} />}
+                onClick={handleCloudLoginRedirect}
+              >
+                Open {emailProvider} Cloud Sign-In
+              </SeniorButton>
+            </div>
           </div>
 
           {/* Option 2: No-Login Email Forwarding */}
