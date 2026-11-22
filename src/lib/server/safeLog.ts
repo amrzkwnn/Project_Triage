@@ -16,6 +16,7 @@ export const ALLOWED_LOG_ROUTES: ReadonlySet<string> = new Set([
   '/api/decide',
   '/api/scam-check',
   '/api/calendar-plan',
+  '/api/media-check',
   'middleware',
 ]);
 

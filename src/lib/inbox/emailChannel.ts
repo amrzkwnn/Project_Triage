@@ -4,12 +4,77 @@ import {
   type InboxItemDraft,
   type Result,
   type Settings,
+  type Verdict,
+  type VerdictValue,
 } from '@/lib/types';
 import type { Vault } from '@/lib/vault/schema';
-import { admit } from '@/lib/vault/consent';
+import { admit, mayCallAi } from '@/lib/vault/consent';
 import { parseIngest } from '@/lib/inbox/parse';
 import { isDuplicate } from '@/lib/inbox/dedup';
 import { analyze } from '@/lib/ai/engine';
+import { checkMediaWithAi } from '@/lib/media/aiMediaClient';
+
+const MAX_SCAN_EMAIL_IMAGE_BYTES = 2 * 1024 * 1024;
+const SUPPORTED_SCAN_IMAGE_MIMES = new Set([
+  'image/jpeg',
+  'image/png',
+  'image/webp',
+]);
+
+const VERDICT_SEVERITY: Record<VerdictValue, number> = {
+  safe: 0,
+  caution: 1,
+  danger: 2,
+};
+
+function decodeBase64Bytes(base64: string): Uint8Array | undefined {
+  try {
+    const cleaned = base64.replace(/\s+/g, '');
+    if (!cleaned) return undefined;
+    if (typeof atob === 'function') {
+      const binary = atob(cleaned);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i += 1) {
+        bytes[i] = binary.charCodeAt(i);
+      }
+      return bytes;
+    }
+    const nodeBuf = (
+      globalThis as unknown as {
+        Buffer?: { from(data: string, encoding: 'base64'): Uint8Array };
+      }
+    ).Buffer;
+    return nodeBuf ? new Uint8Array(nodeBuf.from(cleaned, 'base64')) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function mergeEmailScamWarnings(
+  existing: Verdict | undefined,
+  incoming: Verdict | undefined
+): Verdict | undefined {
+  if (!incoming || incoming.value === 'safe') {
+    return existing;
+  }
+  if (!existing) {
+    return incoming;
+  }
+  const existingSev = VERDICT_SEVERITY[existing.value];
+  const incomingSev = VERDICT_SEVERITY[incoming.value];
+  if (incomingSev < existingSev) {
+    return existing;
+  }
+  const mergedFlags = Array.from(new Set([...existing.flags, ...incoming.flags]));
+  const mergedReasons = Array.from(
+    new Set([...incoming.reasons, ...existing.reasons])
+  ).slice(0, 3);
+  return {
+    value: incomingSev > existingSev ? incoming.value : existing.value,
+    flags: mergedFlags,
+    reasons: mergedReasons,
+  };
+}
 
 export const MAX_EMAIL_BYTES = 25 * 1024 * 1024;
 
@@ -140,6 +205,7 @@ export async function processEmailBatch(params: {
   emails: ReadonlyArray<RawIncomingEmail>;
   vault: Vault;
   fetchDecideFn?: typeof fetch;
+  fetchMediaFn?: typeof fetch;
   nowMs?: number;
 }): Promise<EmailBatchResult> {
   // 1. Respect ConsentGate: stop immediately if email channel is OFF
@@ -255,6 +321,63 @@ export async function processEmailBatch(params: {
     }
 
     const { analysis, tier } = analyzed.value;
+    let mediaCheck: InboxItem['mediaCheck'];
+    let mergedScamWarning: Verdict | undefined = analysis.verdict;
+    let resolvedTier = tier;
+    let resolvedProposals = [...analysis.proposals];
+
+    if (mayCallAi(params.settings) && draft.attachments.length > 0) {
+      const firstImage = draft.attachments.find(
+        (att) =>
+          SUPPORTED_SCAN_IMAGE_MIMES.has(att.mime.toLowerCase()) &&
+          typeof att.dataBase64 === 'string' &&
+          att.dataBase64.trim().length > 0
+      );
+      if (firstImage && firstImage.dataBase64) {
+        const bytes = decodeBase64Bytes(firstImage.dataBase64);
+        if (
+          bytes &&
+          bytes.byteLength > 0 &&
+          bytes.byteLength <= MAX_SCAN_EMAIL_IMAGE_BYTES
+        ) {
+          const mediaScan = await checkMediaWithAi({
+            bytes,
+            mimeType: firstImage.mime.toLowerCase(),
+            fileName: firstImage.name,
+            settings: params.settings,
+            vault: params.vault,
+            fetchFn: params.fetchMediaFn,
+          });
+          if (mediaScan.ok) {
+            mediaCheck = mediaScan.outcome;
+            mergedScamWarning = mergeEmailScamWarnings(
+              mergedScamWarning,
+              mediaScan.scamWarning
+            );
+            if (mergedScamWarning?.value === 'danger') {
+              resolvedTier = 3;
+            }
+            if (
+              mergedScamWarning &&
+              (mergedScamWarning.value === 'danger' ||
+                mergedScamWarning.value === 'caution') &&
+              !resolvedProposals.some((p) => p.kind === 'checkScam')
+            ) {
+              resolvedProposals = [
+                ...resolvedProposals,
+                {
+                  id: `${itemId}:checkScam`,
+                  kind: 'checkScam',
+                  label: 'Forward to Scam Check',
+                  itemId,
+                },
+              ];
+            }
+          }
+        }
+      }
+    }
+
     const item: InboxItem = {
       id: itemId,
       source: 'email',
@@ -268,11 +391,12 @@ export async function processEmailBatch(params: {
       ...(analysis.detectedEvent
         ? { detectedEvent: analysis.detectedEvent }
         : {}),
-      ...(analysis.verdict ? { scamWarning: analysis.verdict } : {}),
-      tier,
+      ...(mergedScamWarning ? { scamWarning: mergedScamWarning } : {}),
+      ...(mediaCheck ? { mediaCheck } : {}),
+      tier: resolvedTier,
       confidence: analysis.confidence,
       status: 'ok',
-      proposals: analysis.proposals,
+      proposals: resolvedProposals,
     };
 
     const putRes = await params.vault.putItem(item);

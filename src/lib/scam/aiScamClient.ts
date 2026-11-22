@@ -121,6 +121,8 @@ function parseServerScamVerdict(
 
 export async function checkMessageWithAi(params: {
   text: string;
+  imageBase64?: string;
+  imageMime?: string;
   settings: Settings;
   vault?: Pick<Vault, 'appendAudit'>;
   fetchFn?: typeof fetch;
@@ -134,7 +136,22 @@ export async function checkMessageWithAi(params: {
     }
   | { ok: false; message: string }
 > {
-  const baseline = checkText(params.text);
+  const hasImage =
+    typeof params.imageBase64 === 'string' &&
+    params.imageBase64.trim().length > 0 &&
+    typeof params.imageMime === 'string' &&
+    params.imageMime.trim().length > 0;
+  const baseline: ScamCheckOutput =
+    params.text.trim().length > 0
+      ? checkText(params.text)
+      : {
+          value: 'safe',
+          flags: [],
+          reasons: [
+            'No clear scam signs were found on this device. Turn on AI Helper for screenshot reading.',
+          ],
+          showAskFamily: false,
+        };
 
   // Consent gate: AI Reading OFF -> zero network calls, zero audit writes
   if (!mayCallAi(params.settings)) {
@@ -148,8 +165,12 @@ export async function checkMessageWithAi(params: {
   // Audit BEFORE external read (Property 7)
   const builtAudit = buildAuditEntry({
     kind: 'ai-read',
-    description: 'Checked one message in Scam Shield',
-    purpose: 'Check message for scam warning signs',
+    description: hasImage
+      ? 'Checked one screenshot in Scam Shield'
+      : 'Checked one message in Scam Shield',
+    purpose: hasImage
+      ? 'Check screenshot for scam warning signs'
+      : 'Check message for scam warning signs',
   });
 
   if (!builtAudit.ok || !params.vault) {
@@ -191,6 +212,12 @@ export async function checkMessageWithAi(params: {
   });
 
   try {
+    const requestPayload: Record<string, string> = { text: params.text };
+    if (hasImage && params.imageBase64 && params.imageMime) {
+      requestPayload.imageBase64 = params.imageBase64.trim();
+      requestPayload.imageMime = params.imageMime.trim();
+    }
+
     const fetchPromise = Promise.resolve().then(() =>
       fetchFn(DEFAULT_SCAM_CHECK_ENDPOINT, {
         method: 'POST',
@@ -198,7 +225,7 @@ export async function checkMessageWithAi(params: {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${DEFAULT_CLIENT_AUTH}`,
         },
-        body: JSON.stringify({ text: params.text }),
+        body: JSON.stringify(requestPayload),
         signal: controller.signal,
       })
     );

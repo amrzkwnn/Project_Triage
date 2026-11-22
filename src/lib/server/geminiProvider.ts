@@ -1,22 +1,31 @@
-import type { CalendarCategory, Channel } from '@/lib/types';
+import type { CalendarCategory, Channel, Verdict } from '@/lib/types';
 import type { Candidate } from '@/lib/calendar/ocr';
+import type { MediaCheckOutcome } from '@/lib/media/result';
 import type { ScamCheckOutput } from '@/lib/scam/verdict';
 import type {
   CalendarPlanAiProvider,
   CalendarPlanInputItem,
   DecideAiProvider,
   DecideOutput,
+  MediaCheckAiProvider,
   ScamCheckAiProvider,
+  ScamCheckProviderInput,
 } from '@/lib/server/handlers';
 
 export type {
   CalendarPlanAiProvider,
   CalendarPlanInputItem,
+  MediaCheckAiProvider,
   ScamCheckAiProvider,
+  ScamCheckProviderInput,
 } from '@/lib/server/handlers';
 
 export const DEFAULT_GEMINI_MODEL = 'gemini-3.5-flash-lite';
 const DEFAULT_GEMINI_TIMEOUT_MS = 8000;
+const DEFAULT_GEMINI_VISION_TIMEOUT_MS = 12000;
+
+const FORBIDDEN_CERTAINTY_PATTERN =
+  /100%\s*real|certainly\s+authentic|guaranteed\s+real|proven\s+real/gi;
 
 const DEFAULT_GEMINI_PROVIDER_SYMBOL = Symbol.for(
   'senior-companion.default-gemini-provider'
@@ -28,6 +37,10 @@ const DEFAULT_GEMINI_SCAM_CHECKER_SYMBOL = Symbol.for(
 
 const DEFAULT_GEMINI_CALENDAR_PLANNER_SYMBOL = Symbol.for(
   'senior-companion.default-gemini-calendar-planner'
+);
+
+const DEFAULT_GEMINI_MEDIA_CHECKER_SYMBOL = Symbol.for(
+  'senior-companion.default-gemini-media-checker'
 );
 
 const GEMINI_PLANNER_FAILED_SYMBOL = Symbol.for(
@@ -167,6 +180,40 @@ const GEMINI_CALENDAR_PLAN_RESPONSE_SCHEMA = {
   required: ['candidates'],
 } as const;
 
+const GEMINI_MEDIA_CHECK_RESPONSE_SCHEMA = {
+  type: 'OBJECT',
+  properties: {
+    result: {
+      type: 'STRING',
+      enum: ['AI signal found', 'Camera signal found', 'Cannot tell'],
+    },
+    signalName: { type: 'STRING' },
+    note: { type: 'STRING' },
+    scamWarning: {
+      type: 'OBJECT',
+      properties: {
+        value: {
+          type: 'STRING',
+          enum: ['safe', 'caution', 'danger'],
+        },
+        flags: {
+          type: 'ARRAY',
+          items: {
+            type: 'STRING',
+            enum: ['urgency', 'secrecy', 'payment', 'domain-mismatch'],
+          },
+        },
+        reasons: {
+          type: 'ARRAY',
+          items: { type: 'STRING' },
+        },
+      },
+      required: ['value', 'flags', 'reasons'],
+    },
+  },
+  required: ['result', 'note'],
+} as const;
+
 type GeminiGenerateContentResponse = {
   candidates?: Array<{
     content?: {
@@ -221,10 +268,20 @@ function buildGeminiPrompt(item: { channel: Channel; text: string }): string {
   ].join('\n');
 }
 
-function buildGeminiScamPrompt(text: string): string {
-  return [
-    'You are a calm, protective scam-safety companion helping an older adult check a suspicious message.',
-    'Check carefully for obvious AND subtle scams: fake relatives ("Hi Mum, new number"), bank or parcel impersonation, romance or lottery tricks, urgent pressure, secrecy requests, unusual payment demands, or mismatched web links.',
+function stripForbiddenCertainty(value: string): string {
+  return value
+    .replace(FORBIDDEN_CERTAINTY_PATTERN, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+}
+
+function buildGeminiScamPrompt(text: string, hasImage: boolean): string {
+  const lines = [
+    'You are a calm, protective scam-safety companion helping an older adult check a suspicious message or screenshot.',
+    hasImage
+      ? 'Read ALL visible words, sender details, web links, QR codes, bank details, and urgent demands inside the attached screenshot image as well as any pasted text below.'
+      : 'Check carefully for obvious AND subtle scams: fake relatives ("Hi Mum, new number"), bank or parcel impersonation, romance or lottery tricks, urgent pressure, secrecy requests, unusual payment demands, or mismatched web links.',
+    'Check carefully for fake relatives ("Hi Mum, new number"), bank or parcel impersonation, romance or lottery tricks, urgent pressure, secrecy requests, unusual payment demands, or mismatched web links.',
     'Write in warm, clear, plain language. Never use technical jargon (never use words like sync, token, api, cache, oauth, webhook, regex, payload, or endpoint).',
     'Return JSON matching the required schema:',
     '- value: "danger" for likely scams or clear manipulation, "caution" when something feels suspicious and should be verified first, or "safe" when no warning signs appear.',
@@ -232,9 +289,31 @@ function buildGeminiScamPrompt(text: string): string {
     '- reasons: 1 to 3 short, clear plain-language sentences (each under 150 characters) explaining why.',
     '- instruction: clear next step (for example "Do not click or pay" for danger, or "Hang up and call back using a number saved in your contacts" for caution).',
     '- showAskFamily: true for danger or when checking with a trusted family member is helpful, otherwise false.',
-    '',
-    'Message to check:',
-    text,
+  ];
+
+  if (text.trim().length > 0) {
+    lines.push('', 'Message to check:', text);
+  } else if (hasImage) {
+    lines.push('', 'Inspect the attached screenshot image carefully.');
+  }
+
+  return lines.join('\n');
+}
+
+function buildGeminiMediaCheckPrompt(params: { fileName?: string }): string {
+  return [
+    'You are a calm, careful photo-safety helper assisting an older adult.',
+    'Inspect the attached photo for two things:',
+    '1. Visual clues of AI generation or heavy AI editing (such as extra or warped fingers, scrambled background signs or letters, uneven teeth or melting glasses frames, overly smooth plastic skin, or impossible lighting).',
+    '2. Scam or phishing warning signs inside the image (such as fake bank alerts, prize cheques, urgent payment demands, suspicious links, or fake relative messages).',
+    'IMPORTANT HONESTY RULE: NEVER claim a photo is "100% real", "certainly authentic", "guaranteed real", or "proven real". No tool can guarantee a photo is authentic.',
+    'Write in warm, clear, plain language. Never use technical jargon (do not use words like sync, token, api, cache, oauth, webhook, regex, payload, or endpoint).',
+    'Return JSON matching the required schema:',
+    '- result: "AI signal found" if clear visual signs of AI generation appear, "Camera signal found" if natural photo clues appear without AI artifacts, or "Cannot tell" when uncertain.',
+    '- signalName (optional): short plain-language summary of the main visual clue noticed (under 100 characters).',
+    '- note: 1 to 2 calm plain-language sentences explaining what was noticed (under 280 characters) and reminding the user to pause if anyone asks for money.',
+    '- scamWarning (optional): include ONLY when the image shows scam, phishing, urgency, secrecy, or payment warning signs.',
+    ...(params.fileName ? ['', `Photo name: ${params.fileName}`] : []),
   ].join('\n');
 }
 
@@ -299,6 +378,15 @@ export function isDefaultGeminiCalendarPlanner(fn: unknown): boolean {
     typeof fn === 'function' &&
     (fn as unknown as Record<symbol, unknown>)[
       DEFAULT_GEMINI_CALENDAR_PLANNER_SYMBOL
+    ] === true
+  );
+}
+
+export function isDefaultGeminiMediaChecker(fn: unknown): boolean {
+  return (
+    typeof fn === 'function' &&
+    (fn as unknown as Record<symbol, unknown>)[
+      DEFAULT_GEMINI_MEDIA_CHECKER_SYMBOL
     ] === true
   );
 }
@@ -386,20 +474,49 @@ export function createGeminiScamChecker(deps?: {
 }): ScamCheckAiProvider {
   const timeoutMs = deps?.timeoutMs ?? DEFAULT_GEMINI_TIMEOUT_MS;
 
-  const checker: ScamCheckAiProvider = async (text, apiKey) => {
+  const checker: ScamCheckAiProvider = async (
+    input: ScamCheckProviderInput,
+    apiKey: string
+  ) => {
     const fetchFn = deps?.fetchFn ?? globalThis.fetch;
     if (typeof fetchFn !== 'function' || !apiKey) {
       return {};
     }
 
+    const normalized =
+      typeof input === 'string' ? { text: input } : input;
+    const text = typeof normalized.text === 'string' ? normalized.text : '';
+    const hasImage =
+      typeof normalized.imageBase64 === 'string' &&
+      normalized.imageBase64.trim().length > 0 &&
+      typeof normalized.imageMime === 'string' &&
+      normalized.imageMime.trim().length > 0;
+
     const model =
       deps?.model?.trim() || getEnvVar('GEMINI_MODEL') || DEFAULT_GEMINI_MODEL;
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`;
 
+    const effectiveTimeout = hasImage
+      ? Math.max(timeoutMs, DEFAULT_GEMINI_VISION_TIMEOUT_MS)
+      : timeoutMs;
     const controller = new AbortController();
     const timer = setTimeout(() => {
       controller.abort();
-    }, timeoutMs);
+    }, effectiveTimeout);
+
+    const parts: Array<
+      | { text: string }
+      | { inlineData: { mimeType: string; data: string } }
+    > = [];
+    if (hasImage && normalized.imageBase64 && normalized.imageMime) {
+      parts.push({
+        inlineData: {
+          mimeType: normalized.imageMime.trim(),
+          data: normalized.imageBase64.trim(),
+        },
+      });
+    }
+    parts.push({ text: buildGeminiScamPrompt(text, hasImage) });
 
     try {
       const response = await fetchFn(url, {
@@ -412,7 +529,7 @@ export function createGeminiScamChecker(deps?: {
           contents: [
             {
               role: 'user',
-              parts: [{ text: buildGeminiScamPrompt(text) }],
+              parts,
             },
           ],
           generationConfig: {
@@ -576,4 +693,125 @@ export function createGeminiCalendarPlanner(deps?: {
   }
 
   return planner;
+}
+
+export function createGeminiMediaChecker(deps?: {
+  fetchFn?: typeof fetch;
+  model?: string;
+  timeoutMs?: number;
+}): MediaCheckAiProvider {
+  const timeoutMs = deps?.timeoutMs ?? DEFAULT_GEMINI_VISION_TIMEOUT_MS;
+
+  const checker: MediaCheckAiProvider = async (params, apiKey) => {
+    const fetchFn = deps?.fetchFn ?? globalThis.fetch;
+    if (
+      typeof fetchFn !== 'function' ||
+      !apiKey ||
+      !params.imageBase64 ||
+      !params.mimeType
+    ) {
+      return {};
+    }
+
+    const model =
+      deps?.model?.trim() || getEnvVar('GEMINI_MODEL') || DEFAULT_GEMINI_MODEL;
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`;
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => {
+      controller.abort();
+    }, timeoutMs);
+
+    try {
+      const response = await fetchFn(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-goog-api-key': apiKey,
+        },
+        body: JSON.stringify({
+          contents: [
+            {
+              role: 'user',
+              parts: [
+                {
+                  inlineData: {
+                    mimeType: params.mimeType,
+                    data: params.imageBase64,
+                  },
+                },
+                {
+                  text: buildGeminiMediaCheckPrompt({
+                    fileName: params.fileName,
+                  }),
+                },
+              ],
+            },
+          ],
+          generationConfig: {
+            responseMimeType: 'application/json',
+            responseSchema: GEMINI_MEDIA_CHECK_RESPONSE_SCHEMA,
+          },
+        }),
+        signal: controller.signal,
+      });
+
+      if (!response.ok) {
+        return {};
+      }
+
+      const data = (await response.json()) as GeminiGenerateContentResponse;
+      const rawText = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+      if (typeof rawText !== 'string' || rawText.trim().length === 0) {
+        return {};
+      }
+
+      const parsed: unknown = JSON.parse(rawText);
+      if (!isPlainObject(parsed)) {
+        return {};
+      }
+
+      const output: Partial<MediaCheckOutcome> & { scamWarning?: Verdict } = {};
+      if (
+        parsed.result === 'AI signal found' ||
+        parsed.result === 'Camera signal found' ||
+        parsed.result === 'Cannot tell'
+      ) {
+        output.result = parsed.result;
+      }
+      if (typeof parsed.signalName === 'string') {
+        const cleanSignal = stripForbiddenCertainty(parsed.signalName).slice(
+          0,
+          120
+        );
+        if (cleanSignal.length > 0) {
+          output.signalName = cleanSignal;
+        }
+      }
+      if (typeof parsed.note === 'string') {
+        const cleanNote = stripForbiddenCertainty(parsed.note).slice(0, 300);
+        output.note =
+          cleanNote.length > 0
+            ? cleanNote
+            : 'Visual clues were reviewed, but no tool can prove a photo is authentic.';
+      }
+      if (isPlainObject(parsed.scamWarning)) {
+        output.scamWarning = parsed.scamWarning as unknown as Verdict;
+      }
+
+      return output;
+    } catch {
+      return {};
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+
+  if (!deps?.model && !deps?.fetchFn && !deps?.timeoutMs) {
+    (checker as unknown as Record<symbol, unknown>)[
+      DEFAULT_GEMINI_MEDIA_CHECKER_SYMBOL
+    ] = true;
+  }
+
+  return checker;
 }

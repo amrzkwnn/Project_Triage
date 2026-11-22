@@ -34,7 +34,26 @@ import { createVault } from '@/lib/vault/store';
 
 const MAX_SCAM_TEXT_LENGTH = 5_000;
 const MAX_SCREENSHOT_BYTES = 10 * 1024 * 1024;
-const ALLOWED_SCREENSHOT_TYPES = new Set(['image/jpeg', 'image/png']);
+const ALLOWED_SCREENSHOT_TYPES = new Set([
+  'image/jpeg',
+  'image/png',
+  'image/webp',
+]);
+
+function encodeScreenshotBytesToBase64(bytes: Uint8Array): string {
+  const chunkSize = 0x8000;
+  const parts: string[] = [];
+  for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+    const slice = bytes.subarray(offset, offset + chunkSize);
+    let chunk = '';
+    for (let i = 0; i < slice.length; i += 1) {
+      chunk += String.fromCharCode(slice[i]);
+    }
+    parts.push(chunk);
+  }
+  const binary = parts.join('');
+  return typeof btoa === 'function' ? btoa(binary) : '';
+}
 
 export const UNREADABLE_SCREENSHOT_MESSAGE =
   'We could not read the words in that screenshot. Please retake or crop the screenshot more clearly, or paste the message text above.';
@@ -151,6 +170,12 @@ export function ScamShieldPage({
   const [screenshotName, setScreenshotName] = useState<string | undefined>(
     initialScreenshotName
   );
+  const [screenshotBase64, setScreenshotBase64] = useState<string | undefined>(
+    undefined
+  );
+  const [screenshotMime, setScreenshotMime] = useState<string | undefined>(
+    undefined
+  );
   const [screenshotOcrText, setScreenshotOcrText] = useState<string>(
     initialScreenshotOcrText
   );
@@ -242,20 +267,64 @@ export function ScamShieldPage({
     }
   };
 
+  const handleTurnOnAiScanning = async () => {
+    let baseSettings = settings;
+    if (resolvedVault) {
+      const latestRes = await resolvedVault.getSettings();
+      if (latestRes.ok) {
+        baseSettings = latestRes.value;
+      }
+    }
+    const nextSettings: Settings = {
+      ...baseSettings,
+      allowAiReading: true,
+    };
+    if (resolvedVault) {
+      const saveRes = await resolvedVault.saveSettings(nextSettings);
+      if (!saveRes.ok) {
+        setCheckError(saveRes.error.message);
+        setStatusMessage(saveRes.error.message);
+        return;
+      }
+    }
+    setSettings(nextSettings);
+    setCheckError(undefined);
+    setStatusMessage(
+      'AI scanning is now ON. Tap "Is This Safe?" to check messages or screenshots with AI Helper.'
+    );
+  };
+
   const handleRunCheck = async () => {
     setCheckError(undefined);
     setCheckNotice(undefined);
-    const evaluated = evaluateScamCheckInput({
-      messageText,
-      screenshotName,
-      screenshotOcrText,
-    });
-    if (!evaluated.ok) {
+
+    const canScanScreenshotWithAi =
+      settings.allowAiReading &&
+      Boolean(screenshotBase64 && screenshotMime);
+
+    if (messageText.length > MAX_SCAM_TEXT_LENGTH) {
+      const tooLongMsg =
+        'This message is longer than 5,000 characters. Please shorten it and check again.';
       setVerdict(undefined);
       setCheckedBy(undefined);
-      setCheckError(evaluated.message);
-      setStatusMessage(evaluated.message);
+      setCheckError(tooLongMsg);
+      setStatusMessage(tooLongMsg);
       return;
+    }
+
+    if (!canScanScreenshotWithAi) {
+      const evaluated = evaluateScamCheckInput({
+        messageText,
+        screenshotName,
+        screenshotOcrText,
+      });
+      if (!evaluated.ok) {
+        setVerdict(undefined);
+        setCheckedBy(undefined);
+        setCheckError(evaluated.message);
+        setStatusMessage(evaluated.message);
+        return;
+      }
     }
 
     const trimmedMessage = messageText.trim();
@@ -275,6 +344,9 @@ export function ScamShieldPage({
     try {
       const aiRes = await checkMessageWithAi({
         text: textToCheck,
+        ...(canScanScreenshotWithAi && screenshotBase64 && screenshotMime
+          ? { imageBase64: screenshotBase64, imageMime: screenshotMime }
+          : {}),
         settings,
         vault: resolvedVault,
         fetchFn,
@@ -314,7 +386,7 @@ export function ScamShieldPage({
 
     if (!ALLOWED_SCREENSHOT_TYPES.has(file.type)) {
       setCheckError(
-        'Please choose a JPEG or PNG screenshot up to 10 MB. Your message text is still here.'
+        'Please choose a JPEG, PNG, or WebP screenshot up to 10 MB. Your message text is still here.'
       );
       setStatusMessage('Unsupported screenshot file.');
       return;
@@ -322,7 +394,7 @@ export function ScamShieldPage({
 
     if (file.size > MAX_SCREENSHOT_BYTES) {
       setCheckError(
-        'That screenshot is larger than 10 MB. Please choose a smaller JPEG or PNG screenshot.'
+        'That screenshot is larger than 10 MB. Please choose a smaller JPEG, PNG, or WebP screenshot.'
       );
       setStatusMessage('Screenshot is larger than 10 MB.');
       return;
@@ -337,6 +409,16 @@ export function ScamShieldPage({
     }
 
     setScreenshotName(file.name);
+    try {
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      const encoded = encodeScreenshotBytesToBase64(bytes);
+      setScreenshotBase64(encoded || undefined);
+      setScreenshotMime(encoded ? file.type : undefined);
+    } catch {
+      setScreenshotBase64(undefined);
+      setScreenshotMime(undefined);
+    }
+
     if (extractScreenshotText) {
       try {
         const extracted = await extractScreenshotText(file);
@@ -517,7 +599,7 @@ export function ScamShieldPage({
           <input
             id="scam-screenshot-input"
             type="file"
-            accept="image/jpeg,image/png"
+            accept="image/jpeg,image/png,image/webp"
             onChange={(e) => void handleScreenshotChange(e)}
             className="sr-only"
           />
@@ -540,11 +622,21 @@ export function ScamShieldPage({
         </div>
 
         {!settings.allowAiReading ? (
-          <p className="rounded-chip border border-line bg-canvas p-4 text-[18px] leading-relaxed text-muted">
-            Tip: Right now, messages are checked using built-in safety rules on
-            this device. You can turn on AI Reading in My Data if you would like
-            extra AI Helper checks for subtle scams.
-          </p>
+          <div className="rounded-card border border-line bg-canvas p-4 space-y-3">
+            <p className="text-[18px] leading-relaxed text-muted">
+              Right now, messages are checked using built-in safety rules on
+              this device. Turn on AI scanning to let AI Helper read screenshots
+              and spot subtle scams. Every check is recorded in My Data, and you
+              can turn it off anytime.
+            </p>
+            <SeniorButton
+              variant="secondary"
+              icon={<Sparkles size={20} />}
+              onClick={() => void handleTurnOnAiScanning()}
+            >
+              Turn On AI Scanning
+            </SeniorButton>
+          </div>
         ) : null}
 
         {checkError ? (

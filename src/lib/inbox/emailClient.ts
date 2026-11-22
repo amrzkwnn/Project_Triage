@@ -1,4 +1,4 @@
-import type { InboxItem, InboxItemDraft, Settings } from '@/lib/types';
+import type { Attachment, InboxItem, InboxItemDraft, Settings } from '@/lib/types';
 import {
   EMAIL_RECONNECT_MESSAGE,
   processEmailBatch,
@@ -769,6 +769,97 @@ type CloudFetchOutcome =
   | { status: 'expired' }
   | { status: 'error' };
 
+const MAX_EMAIL_IMAGE_ATTACHMENT_BYTES = 2 * 1024 * 1024;
+const SUPPORTED_EMAIL_IMAGE_MIMES = new Set([
+  'image/jpeg',
+  'image/png',
+  'image/webp',
+]);
+
+type GmailMessagePart = {
+  partId?: unknown;
+  mimeType?: unknown;
+  filename?: unknown;
+  body?: {
+    attachmentId?: unknown;
+    size?: unknown;
+    data?: unknown;
+  };
+  parts?: GmailMessagePart[];
+};
+
+function normalizeBase64UrlToStandard(raw: string): string {
+  const normalized = raw.replace(/-/g, '+').replace(/_/g, '/').replace(/\s+/g, '');
+  const remainder = normalized.length % 4;
+  if (remainder === 0) return normalized;
+  return normalized + '='.repeat(4 - remainder);
+}
+
+function estimateBase64ByteLength(base64: string): number {
+  const cleaned = base64.replace(/\s+/g, '');
+  if (cleaned.length === 0) return 0;
+  const padding = cleaned.endsWith('==') ? 2 : cleaned.endsWith('=') ? 1 : 0;
+  return Math.floor((cleaned.length * 3) / 4) - padding;
+}
+
+function findFirstGmailImagePart(
+  parts: readonly GmailMessagePart[] | undefined
+):
+  | {
+      id: string;
+      mime: string;
+      name: string;
+      size?: number;
+      inlineData?: string;
+      attachmentId?: string;
+    }
+  | undefined {
+  if (!Array.isArray(parts)) return undefined;
+  for (const part of parts) {
+    if (!part || typeof part !== 'object') continue;
+    const mime =
+      typeof part.mimeType === 'string'
+        ? part.mimeType.trim().toLowerCase()
+        : '';
+    if (SUPPORTED_EMAIL_IMAGE_MIMES.has(mime)) {
+      const size =
+        typeof part.body?.size === 'number' && Number.isFinite(part.body.size)
+          ? part.body.size
+          : undefined;
+      if (size !== undefined && size > MAX_EMAIL_IMAGE_ATTACHMENT_BYTES) {
+        continue;
+      }
+      const inlineData =
+        typeof part.body?.data === 'string' && part.body.data.trim().length > 0
+          ? part.body.data.trim()
+          : undefined;
+      const attachmentId =
+        typeof part.body?.attachmentId === 'string' &&
+        part.body.attachmentId.trim().length > 0
+          ? part.body.attachmentId.trim()
+          : undefined;
+      if (inlineData || attachmentId) {
+        const ext = mime === 'image/png' ? 'png' : mime === 'image/webp' ? 'webp' : 'jpg';
+        const name =
+          typeof part.filename === 'string' && part.filename.trim().length > 0
+            ? part.filename.trim().slice(0, 120)
+            : `email-image.${ext}`;
+        const id =
+          attachmentId ??
+          (typeof part.partId === 'string' && part.partId.trim().length > 0
+            ? `gmail-part-${part.partId.trim()}`
+            : 'gmail-inline-image');
+        return { id, mime, name, size, inlineData, attachmentId };
+      }
+    }
+    if (Array.isArray(part.parts)) {
+      const nested = findFirstGmailImagePart(part.parts);
+      if (nested) return nested;
+    }
+  }
+  return undefined;
+}
+
 async function fetchCloudProviderEmails(params: {
   record: OAuthTokenRecord;
   vault: Vault;
@@ -783,7 +874,7 @@ async function fetchCloudProviderEmails(params: {
   try {
     if (record.provider === 'Outlook') {
       const response = await fetchFn(
-        'https://graph.microsoft.com/v1.0/me/messages?$top=10&$select=id,subject,from,receivedDateTime,bodyPreview',
+        'https://graph.microsoft.com/v1.0/me/messages?$top=10&$select=id,subject,from,receivedDateTime,bodyPreview,hasAttachments',
         {
           method: 'GET',
           headers: authHeaders,
@@ -816,6 +907,7 @@ async function fetchCloudProviderEmails(params: {
           };
           receivedDateTime?: unknown;
           bodyPreview?: unknown;
+          hasAttachments?: unknown;
         }>;
       };
 
@@ -841,6 +933,76 @@ async function fetchCloudProviderEmails(params: {
             : address || name || undefined;
         const receivedAt = toIsoTimestamp(msg.receivedDateTime);
 
+        const attachments: Attachment[] = [];
+        if (msg.hasAttachments === true && typeof msg.id === 'string') {
+          try {
+            const attRes = await fetchFn(
+              `https://graph.microsoft.com/v1.0/me/messages/${encodeURIComponent(
+                id
+              )}/attachments?$select=id,name,contentType,size,contentBytes`,
+              {
+                method: 'GET',
+                headers: authHeaders,
+              }
+            );
+            if (attRes.ok) {
+              const attData = (await attRes.json()) as {
+                value?: Array<{
+                  id?: unknown;
+                  name?: unknown;
+                  contentType?: unknown;
+                  size?: unknown;
+                  contentBytes?: unknown;
+                }>;
+              };
+              const attList = Array.isArray(attData?.value) ? attData.value : [];
+              for (const att of attList) {
+                if (!att || typeof att !== 'object') continue;
+                const mime =
+                  typeof att.contentType === 'string'
+                    ? att.contentType.trim().toLowerCase()
+                    : '';
+                if (!SUPPORTED_EMAIL_IMAGE_MIMES.has(mime)) continue;
+                if (
+                  typeof att.contentBytes !== 'string' ||
+                  att.contentBytes.trim().length === 0
+                ) {
+                  continue;
+                }
+                const cleanBase64 = att.contentBytes.replace(/\s+/g, '');
+                const byteSize =
+                  typeof att.size === 'number' && Number.isFinite(att.size)
+                    ? att.size
+                    : estimateBase64ByteLength(cleanBase64);
+                if (
+                  byteSize <= 0 ||
+                  byteSize > MAX_EMAIL_IMAGE_ATTACHMENT_BYTES ||
+                  estimateBase64ByteLength(cleanBase64) >
+                    MAX_EMAIL_IMAGE_ATTACHMENT_BYTES
+                ) {
+                  continue;
+                }
+                attachments.push({
+                  id:
+                    typeof att.id === 'string' && att.id.trim().length > 0
+                      ? att.id.trim()
+                      : `outlook-att-${id}`,
+                  mime,
+                  name:
+                    typeof att.name === 'string' && att.name.trim().length > 0
+                      ? att.name.trim().slice(0, 120)
+                      : 'email-image.jpg',
+                  size: byteSize,
+                  dataBase64: cleanBase64,
+                });
+                break;
+              }
+            }
+          } catch {
+            // Skip attachment fetch failures gracefully
+          }
+        }
+
         rawEmails.push({
           id,
           ...(from ? { from: from.slice(0, 256) } : {}),
@@ -849,6 +1011,7 @@ async function fetchCloudProviderEmails(params: {
             ? { body: msg.bodyPreview }
             : {}),
           ...(receivedAt ? { receivedAt } : {}),
+          ...(attachments.length > 0 ? { attachments } : {}),
         });
       }
 
@@ -857,6 +1020,8 @@ async function fetchCloudProviderEmails(params: {
         tokenStatus: 'valid',
         emails: rawEmails,
         vault,
+        fetchDecideFn: fetchFn,
+        fetchMediaFn: fetchFn,
       });
 
       return {
@@ -911,7 +1076,7 @@ async function fetchCloudProviderEmails(params: {
           const detailRes = await fetchFn(
             `https://gmail.googleapis.com/gmail/v1/users/me/messages/${encodeURIComponent(
               msgId
-            )}?format=metadata&metadataHeaders=From&metadataHeaders=Subject&metadataHeaders=Date`,
+            )}?format=full`,
             {
               method: 'GET',
               headers: authHeaders,
@@ -932,6 +1097,7 @@ async function fetchCloudProviderEmails(params: {
             internalDate?: unknown;
             payload?: {
               headers?: Array<{ name?: unknown; value?: unknown }>;
+              parts?: GmailMessagePart[];
             };
           };
 
@@ -956,6 +1122,59 @@ async function fetchCloudProviderEmails(params: {
           const receivedAt =
             toIsoTimestamp(dateHeader) ?? toIsoTimestamp(detail?.internalDate);
 
+          const attachments: Attachment[] = [];
+          const imagePart = findFirstGmailImagePart(detail?.payload?.parts);
+          if (imagePart) {
+            let standardBase64: string | undefined;
+            if (imagePart.inlineData) {
+              standardBase64 = normalizeBase64UrlToStandard(
+                imagePart.inlineData
+              );
+            } else if (imagePart.attachmentId) {
+              try {
+                const attRes = await fetchFn(
+                  `https://gmail.googleapis.com/gmail/v1/users/me/messages/${encodeURIComponent(
+                    msgId
+                  )}/attachments/${encodeURIComponent(imagePart.attachmentId)}`,
+                  {
+                    method: 'GET',
+                    headers: authHeaders,
+                  }
+                );
+                if (attRes.ok) {
+                  const attJson = (await attRes.json()) as {
+                    data?: unknown;
+                    size?: unknown;
+                  };
+                  if (
+                    typeof attJson?.data === 'string' &&
+                    attJson.data.trim().length > 0
+                  ) {
+                    standardBase64 = normalizeBase64UrlToStandard(attJson.data);
+                  }
+                }
+              } catch {
+                // Skip failed attachment download gracefully
+              }
+            }
+
+            if (standardBase64) {
+              const estBytes = estimateBase64ByteLength(standardBase64);
+              if (
+                estBytes > 0 &&
+                estBytes <= MAX_EMAIL_IMAGE_ATTACHMENT_BYTES
+              ) {
+                attachments.push({
+                  id: imagePart.id,
+                  mime: imagePart.mime,
+                  name: imagePart.name,
+                  size: imagePart.size ?? estBytes,
+                  dataBase64: standardBase64,
+                });
+              }
+            }
+          }
+
           return {
             kind: 'ok',
             email: {
@@ -969,6 +1188,7 @@ async function fetchCloudProviderEmails(params: {
                 ? { body: detail.snippet }
                 : {}),
               ...(receivedAt ? { receivedAt } : {}),
+              ...(attachments.length > 0 ? { attachments } : {}),
             },
           };
         })
@@ -995,6 +1215,8 @@ async function fetchCloudProviderEmails(params: {
         tokenStatus: 'valid',
         emails: rawEmails,
         vault,
+        fetchDecideFn: fetchFn,
+        fetchMediaFn: fetchFn,
       });
 
       return {

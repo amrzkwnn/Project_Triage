@@ -101,6 +101,9 @@ export async function dispatchApiRequest(
     case '/api/calendar-plan':
       if (method !== 'POST') return methodNotAllowedResponse('POST');
       break;
+    case '/api/media-check':
+      if (method !== 'POST') return methodNotAllowedResponse('POST');
+      break;
     default:
       return null;
   }
@@ -165,6 +168,23 @@ export async function dispatchApiRequest(
         logger: rt.logger,
         now: rt.now,
         calendarPlanner,
+        env: effectiveEnv,
+      })(req);
+    }
+    case '/api/media-check': {
+      const effectiveEnv = envOverride ?? rt.env;
+      const modelOverride = effectiveEnv?.GEMINI_MODEL?.trim();
+      const mediaChecker =
+        modelOverride &&
+        geminiProvider.isDefaultGeminiMediaChecker(rt.mediaChecker)
+          ? geminiProvider.createGeminiMediaChecker({ model: modelOverride })
+          : rt.mediaChecker;
+      return handlers.createMediaCheckPostHandler({
+        tokenRegistry: rt.tokenRegistry,
+        rateLimiter: rt.rateLimiter,
+        logger: rt.logger,
+        now: rt.now,
+        mediaChecker,
         env: effectiveEnv,
       })(req);
     }

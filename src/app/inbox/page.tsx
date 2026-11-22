@@ -8,6 +8,7 @@ import {
   Check,
   Eye,
   FolderPlus,
+  HelpCircle,
   Inbox,
   Lock,
   Mail,
@@ -1775,7 +1776,41 @@ export function UnifiedInboxPage({
                     <div className="flex flex-wrap items-center gap-3">
                       <SourceBadge source={item.source} />
                       <PriorityPill priority={item.priority} />
+                      {item.mediaCheck ? (
+                        <span
+                          data-badge="true"
+                          className={
+                            item.mediaCheck.result === 'AI signal found'
+                              ? 'inline-flex items-center gap-2 rounded-full border-2 border-[#BE123C] bg-[#FFF1F2] px-3.5 py-1 text-[15px] font-bold text-[#881337]'
+                              : item.mediaCheck.result === 'Camera signal found'
+                                ? 'inline-flex items-center gap-2 rounded-full border-2 border-[#0F766E] bg-[#F0FDFA] px-3.5 py-1 text-[15px] font-bold text-[#115E59]'
+                                : 'inline-flex items-center gap-2 rounded-full border-2 border-[#D97706] bg-[#FFFBEB] px-3.5 py-1 text-[15px] font-bold text-[#92400E]'
+                          }
+                        >
+                          <span aria-hidden="true" className="inline-flex shrink-0">
+                            {item.mediaCheck.result === 'AI signal found' ? (
+                              <ShieldAlert size={16} />
+                            ) : item.mediaCheck.result === 'Camera signal found' ? (
+                              <Camera size={16} />
+                            ) : (
+                              <HelpCircle size={16} />
+                            )}
+                          </span>
+                          <span>{item.mediaCheck.result}</span>
+                        </span>
+                      ) : null}
                     </div>
+
+                    {item.mediaCheck ? (
+                      <div className="rounded-chip border border-line bg-canvas px-4 py-3 text-[16px] leading-snug text-ink space-y-1">
+                        {item.mediaCheck.signalName ? (
+                          <p className="font-semibold text-brand-deep">
+                            Photo check detail: {item.mediaCheck.signalName}
+                          </p>
+                        ) : null}
+                        <p>{item.mediaCheck.note}</p>
+                      </div>
+                    ) : null}
 
                     <div className="flex flex-wrap items-center gap-3">
                       <label

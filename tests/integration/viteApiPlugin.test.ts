@@ -278,6 +278,7 @@ describe('Task 2: Vite API Middleware Dispatcher (/api/*)', () => {
       ['/api/decide', 'GET'],
       ['/api/scam-check', 'GET'],
       ['/api/calendar-plan', 'GET'],
+      ['/api/media-check', 'GET'],
     ] as const) {
       const res = await dispatchApiRequest(
         new Request(`http://localhost:5173${path}`, { method: wrongMethod }),
@@ -650,6 +651,97 @@ describe('Task 2: Vite API Middleware Dispatcher (/api/*)', () => {
         time: '14:30',
         location: 'Smile Clinic',
       });
+    } finally {
+      if (origGeminiKey === undefined) {
+        delete env.GEMINI_API_KEY;
+      } else {
+        env.GEMINI_API_KEY = origGeminiKey;
+      }
+      if (origAiKey === undefined) {
+        delete env.AI_API_KEY;
+      } else {
+        env.AI_API_KEY = origAiKey;
+      }
+      mockLoadEnv.mockReset();
+    }
+  });
+
+  it('seniorCompanionApiPlugin dispatches POST /api/media-check with server-side .env.local GEMINI_API_KEY without leaking key or 100% real', async () => {
+    const env = getProcessEnv();
+    const origGeminiKey = env.GEMINI_API_KEY;
+    const origAiKey = env.AI_API_KEY;
+    delete env.GEMINI_API_KEY;
+    delete env.AI_API_KEY;
+
+    mockLoadEnv.mockReset();
+    mockLoadEnv.mockReturnValue({
+      GEMINI_API_KEY: 'dotenv-media-secret-key',
+    });
+
+    try {
+      let receivedKey = '';
+      let receivedMime = '';
+      const rt: ServerRuntime = {
+        ...createTestRuntime(),
+        mediaChecker: async (params, apiKey) => {
+          receivedKey = apiKey;
+          receivedMime = params.mimeType;
+          return {
+            result: 'AI signal found',
+            signalName: 'Unnatural lighting and distorted letters',
+            note: 'Signs look garbled. Never 100% real.',
+          };
+        },
+      };
+
+      const plugin = seniorCompanionApiPlugin(rt);
+      if (typeof plugin.configResolved === 'function') {
+        plugin.configResolved({
+          mode: 'development',
+          root: '/fake/project-root',
+          envDir: '/fake/env-dir',
+        } as unknown as ResolvedConfig);
+      }
+
+      const devMiddlewares: MockMiddleware[] = [];
+      if (typeof plugin.configureServer === 'function') {
+        plugin.configureServer({
+          middlewares: {
+            use: (mw: MockMiddleware) => {
+              devMiddlewares.push(mw);
+            },
+          },
+        } as unknown as ViteDevServer);
+      }
+
+      const res = await runMiddleware(devMiddlewares[0], {
+        url: '/api/media-check',
+        method: 'POST',
+        headers: {
+          host: 'localhost:5173',
+          authorization: 'Bearer dev-senior-token-1',
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          imageBase64: '/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAA==',
+          mimeType: 'image/jpeg',
+          fileName: 'check.jpg',
+        }),
+      });
+
+      expect(res.calledNext).toBe(false);
+      expect(res.statusCode).toBe(200);
+      expect(receivedKey).toBe('dotenv-media-secret-key');
+      expect(receivedMime).toBe('image/jpeg');
+      expect(res.body).not.toContain('dotenv-media-secret-key');
+      expect(res.body).not.toMatch(/100%\s*real/i);
+
+      const parsed = JSON.parse(res.body) as {
+        result: string;
+        source: 'ai' | 'device';
+      };
+      expect(parsed.source).toBe('ai');
+      expect(parsed.result).toBe('AI signal found');
     } finally {
       if (origGeminiKey === undefined) {
         delete env.GEMINI_API_KEY;

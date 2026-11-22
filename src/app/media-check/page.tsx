@@ -9,6 +9,7 @@ import {
   HelpCircle,
   ScanEye,
   ShieldAlert,
+  ShieldCheck,
   Sparkles,
   Upload,
   Users,
@@ -19,14 +20,17 @@ import { SeniorButton } from '@/components/SeniorButton';
 import { StatusLive } from '@/components/StatusLive';
 import { confirmFromTap } from '@/lib/actions/confirmation';
 import { canShowAskFamily, shareItemWithFamily } from '@/lib/actions/sharing';
-import { inspectProvenance } from '@/lib/media/provenance';
+import { checkMediaWithAi } from '@/lib/media/aiMediaClient';
 import {
   EYE_CHECK_SPOTS,
   VOICE_CLONE_SAFETY_NOTE,
-  mediaResult,
   type MediaCheckOutcome,
 } from '@/lib/media/result';
-import { createDefaultSettings, type Settings } from '@/lib/types';
+import {
+  createDefaultSettings,
+  type Settings,
+  type Verdict,
+} from '@/lib/types';
 import type { Vault } from '@/lib/vault/schema';
 import { createVault } from '@/lib/vault/store';
 
@@ -70,9 +74,13 @@ export type AiMediaCheckPageProps = {
   initialSettings?: Settings;
   initialImageName?: string;
   initialImageDataBase64?: string;
+  initialImageMime?: string;
   initialQuery?: string;
   initialOutcome?: MediaCheckOutcome;
+  initialCheckedBy?: 'ai' | 'device';
+  initialScamWarning?: Verdict;
   initialError?: string;
+  fetchFn?: typeof fetch;
   vault?: Vault;
   onNavigate?: (href: string) => void;
 };
@@ -81,9 +89,13 @@ export function AiMediaCheckPage({
   initialSettings,
   initialImageName,
   initialImageDataBase64,
+  initialImageMime,
   initialQuery,
   initialOutcome,
+  initialCheckedBy,
+  initialScamWarning,
   initialError,
+  fetchFn,
   vault,
   onNavigate,
 }: AiMediaCheckPageProps) {
@@ -99,6 +111,14 @@ export function AiMediaCheckPage({
   const [outcome, setOutcome] = useState<MediaCheckOutcome | undefined>(
     initialOutcome
   );
+  const [checkedBy, setCheckedBy] = useState<'ai' | 'device' | undefined>(
+    initialCheckedBy ?? (initialOutcome ? 'device' : undefined)
+  );
+  const [scamWarning, setScamWarning] = useState<Verdict | undefined>(
+    initialScamWarning
+  );
+  const [checking, setChecking] = useState<boolean>(false);
+  const [checkNotice, setCheckNotice] = useState<string | undefined>(undefined);
   const [uploadError, setUploadError] = useState<string | undefined>(
     initialError
   );
@@ -124,6 +144,46 @@ export function AiMediaCheckPage({
     }
   }, [initialSettings, loadSettings]);
 
+  const runPhotoCheck = useCallback(
+    async (
+      bytes: Uint8Array,
+      mimeType: string,
+      fileName: string,
+      activeSettings: Settings
+    ) => {
+      setUploadError(undefined);
+      setCheckNotice(undefined);
+      setScamWarning(undefined);
+      setChecking(true);
+      setStatusMessage('Checking Photo...');
+      try {
+        const res = await checkMediaWithAi({
+          bytes,
+          mimeType,
+          fileName,
+          settings: activeSettings,
+          vault: resolvedVault,
+          fetchFn,
+        });
+        if (!res.ok) {
+          setOutcome(undefined);
+          setCheckedBy(undefined);
+          setUploadError(res.message);
+          setStatusMessage(res.message);
+          return;
+        }
+        setOutcome(res.outcome);
+        setCheckedBy(res.checkedBy);
+        setScamWarning(res.scamWarning);
+        setCheckNotice(res.notice);
+        setStatusMessage(`Check finished: ${res.outcome.result}.`);
+      } finally {
+        setChecking(false);
+      }
+    },
+    [resolvedVault, fetchFn]
+  );
+
   useEffect(() => {
     const preloadedName =
       initialImageName ?? readPreloadedMediaImageName(initialQuery);
@@ -133,16 +193,21 @@ export function AiMediaCheckPage({
     if (initialOutcome) return;
 
     let base64 = initialImageDataBase64;
+    let mimeType = initialImageMime ?? 'image/jpeg';
     if (!base64 && typeof window !== 'undefined') {
       try {
         const raw = window.sessionStorage.getItem(FORWARDED_MEDIA_STORAGE_KEY);
         if (raw) {
           const parsed = JSON.parse(raw) as {
             name?: string;
+            mime?: string;
             dataBase64?: string;
           };
           if (parsed.name === preloadedName && parsed.dataBase64) {
             base64 = parsed.dataBase64;
+            if (parsed.mime && SUPPORTED_MEDIA_MIMES.has(parsed.mime)) {
+              mimeType = parsed.mime;
+            }
           }
         }
       } catch {
@@ -153,15 +218,45 @@ export function AiMediaCheckPage({
     if (base64) {
       const bytes = base64ToUint8Array(base64);
       if (bytes && bytes.length > 0) {
-        void (async () => {
-          const provenance = await inspectProvenance(bytes);
-          const result = mediaResult(provenance);
-          setOutcome(result);
-          setStatusMessage(`Check finished: ${result.result}.`);
-        })();
+        void runPhotoCheck(bytes, mimeType, preloadedName, settings);
       }
     }
-  }, [initialImageName, initialImageDataBase64, initialQuery, initialOutcome]);
+  }, [
+    initialImageName,
+    initialImageDataBase64,
+    initialImageMime,
+    initialQuery,
+    initialOutcome,
+    runPhotoCheck,
+    settings,
+  ]);
+
+  const handleTurnOnAiScanning = async () => {
+    let baseSettings = settings;
+    if (resolvedVault) {
+      const latestRes = await resolvedVault.getSettings();
+      if (latestRes.ok) {
+        baseSettings = latestRes.value;
+      }
+    }
+    const nextSettings: Settings = {
+      ...baseSettings,
+      allowAiReading: true,
+    };
+    if (resolvedVault) {
+      const saveRes = await resolvedVault.saveSettings(nextSettings);
+      if (!saveRes.ok) {
+        setUploadError(saveRes.error.message);
+        setStatusMessage(saveRes.error.message);
+        return;
+      }
+    }
+    setSettings(nextSettings);
+    setUploadError(undefined);
+    setStatusMessage(
+      'AI scanning is now ON. Choose a photo to check it with AI Helper.'
+    );
+  };
 
   const handleBack = (
     event: React.MouseEvent<HTMLAnchorElement | HTMLButtonElement>
@@ -179,6 +274,8 @@ export function AiMediaCheckPage({
     if (!file) return;
     setUploadError(undefined);
     setOutcome(undefined);
+    setScamWarning(undefined);
+    setCheckNotice(undefined);
     setConfirmShareOpen(false);
 
     if (!SUPPORTED_MEDIA_MIMES.has(file.type) || file.size > MAX_MEDIA_BYTES) {
@@ -191,10 +288,7 @@ export function AiMediaCheckPage({
 
     setSelectedFileName(file.name);
     const bytes = new Uint8Array(await file.arrayBuffer());
-    const provenance = await inspectProvenance(bytes);
-    const result = mediaResult(provenance);
-    setOutcome(result);
-    setStatusMessage(`Check finished: ${result.result}.`);
+    await runPhotoCheck(bytes, file.type, file.name, settings);
   };
 
   const handleConfirmAskFamily = async () => {
@@ -340,12 +434,34 @@ export function AiMediaCheckPage({
             onChange={(e) => void handleFileSelected(e)}
             className="sr-only"
           />
-          {selectedFileName ? (
+          {checking ? (
+            <p className="text-[18px] font-semibold text-brand-deep">
+              Checking Photo...
+            </p>
+          ) : selectedFileName ? (
             <p className="text-[18px] font-semibold text-brand-deep">
               Checked photo: {selectedFileName}
             </p>
           ) : null}
         </div>
+
+        {!settings.allowAiReading ? (
+          <div className="rounded-card border border-line bg-canvas p-4 space-y-3">
+            <p className="text-[18px] leading-relaxed text-muted">
+              AI scanning is currently OFF, so photos are checked using file
+              details on this device only. Turn on AI scanning to let AI Helper
+              look closely at visual clues and scam signs. Every check is
+              recorded in My Data, and you can turn it off anytime.
+            </p>
+            <SeniorButton
+              variant="secondary"
+              icon={<Sparkles size={20} />}
+              onClick={() => void handleTurnOnAiScanning()}
+            >
+              Turn On AI Scanning
+            </SeniorButton>
+          </div>
+        ) : null}
 
         {uploadError ? (
           <div
@@ -372,6 +488,39 @@ export function AiMediaCheckPage({
                 </span>
                 <span>Check summary</span>
               </p>
+              {checkedBy ? (
+                <div className="flex flex-wrap items-center gap-3">
+                  <span
+                    data-badge="true"
+                    className={
+                      checkedBy === 'ai'
+                        ? 'inline-flex items-center gap-2 rounded-full border-2 border-brand bg-brand-wash px-3.5 py-1.5 text-[16px] font-bold text-brand-deep shadow-pill'
+                        : 'inline-flex items-center gap-2 rounded-full border-2 border-line bg-canvas px-3.5 py-1.5 text-[16px] font-bold text-ink shadow-pill'
+                    }
+                  >
+                    <span
+                      aria-hidden="true"
+                      className="inline-flex shrink-0 text-brand"
+                    >
+                      {checkedBy === 'ai' ? (
+                        <Sparkles size={18} />
+                      ) : (
+                        <ShieldCheck size={18} />
+                      )}
+                    </span>
+                    <span>
+                      {checkedBy === 'ai'
+                        ? 'Checked with AI Helper'
+                        : 'Checked on This Device'}
+                    </span>
+                  </span>
+                  {checkNotice ? (
+                    <span className="text-[16px] font-medium text-muted">
+                      {checkNotice}
+                    </span>
+                  ) : null}
+                </div>
+              ) : null}
               <div>{renderOutcomeBadge(outcome)}</div>
               {outcome.signalName ? (
                 <p className="text-[18px] font-semibold text-ink">
@@ -381,6 +530,30 @@ export function AiMediaCheckPage({
               <p className="text-[20px] leading-relaxed text-ink">
                 {outcome.note}
               </p>
+              {scamWarning &&
+              (scamWarning.value === 'danger' ||
+                scamWarning.value === 'caution') ? (
+                <div
+                  role="alert"
+                  className="rounded-card border-2 border-[#BE123C] bg-red-50 p-4 space-y-2"
+                >
+                  <p className="flex items-center gap-2 text-[18px] font-bold text-[#881337]">
+                    <span aria-hidden="true" className="inline-flex shrink-0">
+                      <ShieldAlert size={20} />
+                    </span>
+                    <span>
+                      {scamWarning.value === 'danger'
+                        ? 'Scam Warning Found in Photo'
+                        : 'Be Careful with This Photo'}
+                    </span>
+                  </p>
+                  <ul className="list-disc pl-6 space-y-1 text-[18px] text-[#881337]">
+                    {scamWarning.reasons.map((reason, idx) => (
+                      <li key={idx}>{reason}</li>
+                    ))}
+                  </ul>
+                </div>
+              ) : null}
             </div>
           </div>
         ) : null}

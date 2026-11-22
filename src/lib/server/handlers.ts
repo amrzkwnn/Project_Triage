@@ -20,6 +20,8 @@ import {
 } from '@/lib/calendar/ocr';
 import { normalizeTitle } from '@/lib/calendar/snap';
 import { buildClaritySummary } from '@/lib/ai/summary';
+import { inspectProvenance } from '@/lib/media/provenance';
+import { mediaResult, type MediaCheckOutcome } from '@/lib/media/result';
 import { checkText, type ScamCheckOutput } from '@/lib/scam/verdict';
 import { TokenRegistry } from '@/lib/server/auth';
 import { didGeminiPlannerFail } from '@/lib/server/geminiProvider';
@@ -33,11 +35,29 @@ const defaultRateLimiter = createRateLimiter();
 export const MAX_INGEST_BYTES = 10 * 1024 * 1024;
 export const MAX_DECIDE_BYTES = 64 * 1024;
 export const MAX_SCAM_CHECK_BYTES = 32 * 1024;
+export const MAX_SCAM_CHECK_WITH_IMAGE_BYTES = 14 * 1024 * 1024;
+export const MAX_MEDIA_CHECK_BYTES = 14 * 1024 * 1024;
+export const MAX_DECODED_IMAGE_BYTES = 10 * 1024 * 1024;
 export const MAX_CALENDAR_PLAN_BYTES = 128 * 1024;
 export const MAX_CALENDAR_PLAN_ITEMS = 20;
 const MAX_DECIDE_TEXT_LENGTH = 10_000;
 const MAX_SCAM_CHECK_TEXT_LENGTH = 5_000;
 const MAX_CALENDAR_PLAN_ITEM_TEXT_LENGTH = 5_000;
+
+const VALID_IMAGE_MIMES = new Set<string>([
+  'image/jpeg',
+  'image/png',
+  'image/webp',
+]);
+
+const VALID_MEDIA_RESULTS = new Set<MediaCheckOutcome['result']>([
+  'AI signal found',
+  'Camera signal found',
+  'Cannot tell',
+]);
+
+const FORBIDDEN_CERTAINTY_PATTERN =
+  /100%\s*real|certainly\s+authentic|guaranteed\s+real|proven\s+real/gi;
 
 const VALID_CHANNELS = new Set<string>(ALL_CHANNELS);
 const VALID_GROUPS = new Set<GroupCategory>(['Personal', 'Family', 'Others']);
@@ -91,10 +111,34 @@ export type DecideAiProvider = (
   apiKey: string
 ) => Promise<DecideOutput>;
 
+export type ScamCheckProviderInput =
+  | string
+  | { text: string; imageBase64?: string; imageMime?: string };
+
 export type ScamCheckAiProvider = (
-  text: string,
+  input: ScamCheckProviderInput,
   apiKey: string
 ) => Promise<Partial<ScamCheckOutput>>;
+
+export type MediaCheckAiProvider = (
+  params: { imageBase64: string; mimeType: string; fileName?: string },
+  apiKey: string
+) => Promise<Partial<MediaCheckOutcome> & { scamWarning?: Verdict }>;
+
+export type MediaCheckRouteResponse = MediaCheckOutcome & {
+  source: 'ai' | 'device';
+  scamWarning?: Verdict;
+};
+
+export type MediaCheckRouteDeps = {
+  logger: SafeLogger;
+  tokenRegistry?: TokenRegistry;
+  rateLimiter?: RateLimiter;
+  requireAuth?: boolean;
+  now?: () => number;
+  env?: Record<string, string | undefined>;
+  mediaChecker?: MediaCheckAiProvider;
+};
 
 export type CalendarPlanInputItem = {
   id?: string;
@@ -959,6 +1003,49 @@ function mergeScamCheckResult(
   return merged;
 }
 
+function stripForbiddenCertainty(text: string): string {
+  return text
+    .replace(FORBIDDEN_CERTAINTY_PATTERN, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+}
+
+function decodeBase64ToBytes(rawBase64: string): Uint8Array | null {
+  const cleaned = rawBase64.replace(/\s+/g, '');
+  if (
+    cleaned.length === 0 ||
+    !/^[A-Za-z0-9+/]*={0,2}$/.test(cleaned) ||
+    cleaned.length % 4 === 1
+  ) {
+    return null;
+  }
+  const padded =
+    cleaned.length % 4 === 0
+      ? cleaned
+      : cleaned + '='.repeat(4 - (cleaned.length % 4));
+  try {
+    if (typeof atob === 'function') {
+      const binary = atob(padded);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i += 1) {
+        bytes[i] = binary.charCodeAt(i);
+      }
+      return bytes;
+    }
+    const nodeBuf = (
+      globalThis as unknown as {
+        Buffer?: { from(data: string, encoding: 'base64'): Uint8Array };
+      }
+    ).Buffer;
+    if (nodeBuf) {
+      return new Uint8Array(nodeBuf.from(padded, 'base64'));
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 export function createScamCheckPostHandler(
   deps: ScamCheckRouteDeps
 ): (req: Request) => Promise<Response> {
@@ -995,7 +1082,10 @@ export function createScamCheckPostHandler(
         }
       }
 
-      const bodyRead = await readUtf8BodyWithLimit(req, MAX_SCAM_CHECK_BYTES);
+      const bodyRead = await readUtf8BodyWithLimit(
+        req,
+        MAX_SCAM_CHECK_WITH_IMAGE_BYTES
+      );
       if (!bodyRead.ok) {
         return logAndReturn(
           deps.logger,
@@ -1006,11 +1096,11 @@ export function createScamCheckPostHandler(
             {
               error:
                 bodyRead.kind === 'too-large'
-                  ? 'This message is longer than 5,000 characters. Please shorten it and check again. (field: text)'
+                  ? 'This message or screenshot is too large to check. Please keep screenshots under 10 MB. (field: imageBase64)'
                   : 'The message encoding could not be read. (field: encoding)',
-              field: bodyRead.kind === 'too-large' ? 'text' : 'encoding',
+              field: bodyRead.kind === 'too-large' ? 'imageBase64' : 'encoding',
             },
-            400
+            bodyRead.kind === 'too-large' ? 413 : 400
           )
         );
       }
@@ -1034,13 +1124,151 @@ export function createScamCheckPostHandler(
         );
       }
 
-      if (
-        !isPlainObject(rawJson) ||
-        typeof rawJson.text !== 'string' ||
-        rawJson.text.trim().length === 0 ||
-        rawJson.text.length > MAX_SCAM_CHECK_TEXT_LENGTH ||
-        hasLoneSurrogate(rawJson.text)
-      ) {
+      if (!isPlainObject(rawJson)) {
+        return logAndReturn(
+          deps.logger,
+          route,
+          startMs,
+          now,
+          jsonResponse(
+            {
+              error:
+                'Please send message text or a screenshot to check. (field: text)',
+              field: 'text',
+            },
+            400
+          )
+        );
+      }
+
+      const hasTextField = rawJson.text !== undefined;
+      if (hasTextField) {
+        if (
+          typeof rawJson.text !== 'string' ||
+          rawJson.text.length > MAX_SCAM_CHECK_TEXT_LENGTH ||
+          hasLoneSurrogate(rawJson.text)
+        ) {
+          return logAndReturn(
+            deps.logger,
+            route,
+            startMs,
+            now,
+            jsonResponse(
+              {
+                error:
+                  'Please send message text up to 5,000 characters to check. (field: text)',
+                field: 'text',
+              },
+              400
+            )
+          );
+        }
+      }
+
+      const text = typeof rawJson.text === 'string' ? rawJson.text : '';
+      const hasText = text.trim().length > 0;
+
+      const hasImageFields =
+        rawJson.imageBase64 !== undefined || rawJson.imageMime !== undefined;
+      let cleanImageBase64: string | undefined;
+      let cleanImageMime: string | undefined;
+
+      if (hasImageFields) {
+        if (
+          typeof rawJson.imageMime !== 'string' ||
+          !VALID_IMAGE_MIMES.has(rawJson.imageMime.trim().toLowerCase())
+        ) {
+          return logAndReturn(
+            deps.logger,
+            route,
+            startMs,
+            now,
+            jsonResponse(
+              {
+                error:
+                  'Please send a JPEG, PNG, or WebP screenshot image. (field: imageMime)',
+                field: 'imageMime',
+              },
+              400
+            )
+          );
+        }
+
+        if (
+          typeof rawJson.imageBase64 !== 'string' ||
+          rawJson.imageBase64.trim().length === 0
+        ) {
+          return logAndReturn(
+            deps.logger,
+            route,
+            startMs,
+            now,
+            jsonResponse(
+              {
+                error:
+                  'The screenshot image could not be read. (field: imageBase64)',
+                field: 'imageBase64',
+              },
+              400
+            )
+          );
+        }
+
+        const decoded = decodeBase64ToBytes(rawJson.imageBase64);
+        if (!decoded || decoded.byteLength === 0) {
+          return logAndReturn(
+            deps.logger,
+            route,
+            startMs,
+            now,
+            jsonResponse(
+              {
+                error:
+                  'The screenshot image format could not be read. (field: imageBase64)',
+                field: 'imageBase64',
+              },
+              400
+            )
+          );
+        }
+
+        if (decoded.byteLength > MAX_DECODED_IMAGE_BYTES) {
+          return logAndReturn(
+            deps.logger,
+            route,
+            startMs,
+            now,
+            jsonResponse(
+              {
+                error:
+                  'That screenshot is larger than 10 MB. Please choose a smaller image. (field: imageBase64)',
+                field: 'imageBase64',
+              },
+              413
+            )
+          );
+        }
+
+        cleanImageBase64 = rawJson.imageBase64.replace(/\s+/g, '');
+        cleanImageMime = rawJson.imageMime.trim().toLowerCase();
+      } else if (bodyRead.text.length > MAX_SCAM_CHECK_BYTES) {
+        return logAndReturn(
+          deps.logger,
+          route,
+          startMs,
+          now,
+          jsonResponse(
+            {
+              error:
+                'This message is longer than 5,000 characters. Please shorten it and check again. (field: text)',
+              field: 'text',
+            },
+            400
+          )
+        );
+      }
+
+      if (!hasText && !cleanImageBase64) {
         return logAndReturn(
           deps.logger,
           route,
@@ -1057,8 +1285,16 @@ export function createScamCheckPostHandler(
         );
       }
 
-      const text = rawJson.text;
-      const baseline = checkText(text);
+      const baseline: ScamCheckOutput = hasText
+        ? checkText(text)
+        : {
+            value: 'safe',
+            flags: [],
+            reasons: [
+              'No clear scam signs were found on this device.',
+            ],
+            showAskFamily: false,
+          };
       let output: ScamCheckOutput & { source: 'ai' | 'device' } = {
         ...baseline,
         source: 'device',
@@ -1069,8 +1305,299 @@ export function createScamCheckPostHandler(
 
       if (apiKey && deps.scamChecker) {
         try {
-          const aiCandidate = await deps.scamChecker(text, apiKey);
+          const checkerInput: ScamCheckProviderInput = cleanImageBase64
+            ? {
+                text,
+                imageBase64: cleanImageBase64,
+                imageMime: cleanImageMime,
+              }
+            : text;
+          const aiCandidate = await deps.scamChecker(checkerInput, apiKey);
           output = mergeScamCheckResult(aiCandidate, baseline);
+        } catch {
+          output = { ...baseline, source: 'device' };
+        }
+      }
+
+      return logAndReturn(
+        deps.logger,
+        route,
+        startMs,
+        now,
+        jsonResponse(output, 200)
+      );
+    } catch {
+      return logAndReturn(
+        deps.logger,
+        route,
+        startMs,
+        now,
+        jsonResponse({ error: 'Could not process request.' }, 500)
+      );
+    }
+  };
+}
+
+function mergeMediaCheckResult(
+  candidate: (Partial<MediaCheckOutcome> & { scamWarning?: Verdict }) | unknown,
+  baseline: MediaCheckOutcome
+): MediaCheckRouteResponse {
+  if (!isPlainObject(candidate)) {
+    return { ...baseline, source: 'device' };
+  }
+
+  const rawResult = candidate.result;
+  if (
+    typeof rawResult !== 'string' ||
+    !VALID_MEDIA_RESULTS.has(rawResult as MediaCheckOutcome['result'])
+  ) {
+    return { ...baseline, source: 'device' };
+  }
+
+  const rawNote =
+    typeof candidate.note === 'string'
+      ? stripForbiddenCertainty(candidate.note)
+      : '';
+  const safeNote =
+    rawNote.length > 0
+      ? rawNote.slice(0, 300)
+      : 'Visual clues were reviewed, but no tool can prove a photo is authentic.';
+
+  const rawSignal =
+    typeof candidate.signalName === 'string'
+      ? stripForbiddenCertainty(candidate.signalName).slice(0, 120)
+      : '';
+
+  // Never downgrade deterministic AI provenance marker
+  const resolvedResult: MediaCheckOutcome['result'] =
+    baseline.result === 'AI signal found'
+      ? 'AI signal found'
+      : rawResult === 'Cannot tell' && baseline.result === 'Camera signal found'
+        ? 'Camera signal found'
+        : (rawResult as MediaCheckOutcome['result']);
+
+  const resolvedSignalName =
+    baseline.result === 'AI signal found'
+      ? baseline.signalName ?? (rawSignal.length > 0 ? rawSignal : undefined)
+      : rawSignal.length > 0
+        ? rawSignal
+        : baseline.signalName;
+
+  const sanitizedScam = sanitizeVerdict(candidate.scamWarning);
+  const scamWarning =
+    sanitizedScam && sanitizedScam.value !== 'safe'
+      ? {
+          ...sanitizedScam,
+          reasons: sanitizedScam.reasons
+            .map((r) => stripForbiddenCertainty(r))
+            .filter((r) => r.length > 0),
+        }
+      : undefined;
+
+  return {
+    result: resolvedResult,
+    ...(resolvedSignalName ? { signalName: resolvedSignalName } : {}),
+    note: safeNote,
+    ...(scamWarning && scamWarning.reasons.length > 0 ? { scamWarning } : {}),
+    source: 'ai',
+  };
+}
+
+export function createMediaCheckPostHandler(
+  deps: MediaCheckRouteDeps
+): (req: Request) => Promise<Response> {
+  const now = deps.now ?? Date.now;
+  const route = '/api/media-check';
+  const requireAuth = deps.requireAuth !== false;
+  const tokenRegistry = deps.tokenRegistry ?? defaultTokenRegistry;
+  const rateLimiter = deps.rateLimiter ?? defaultRateLimiter;
+
+  return async function POST(req: Request): Promise<Response> {
+    const startMs = now();
+    try {
+      if (requireAuth) {
+        const auth = tokenRegistry.verifyToken(req);
+        if (!auth.ok) {
+          return logAndReturn(
+            deps.logger,
+            route,
+            startMs,
+            now,
+            jsonResponse(auth.body, auth.status)
+          );
+        }
+
+        const rl = rateLimiter.check(auth.tokenHash, now());
+        if (!rl.allowed) {
+          return logAndReturn(
+            deps.logger,
+            route,
+            startMs,
+            now,
+            jsonResponse(rl.body, rl.status)
+          );
+        }
+      }
+
+      const bodyRead = await readUtf8BodyWithLimit(req, MAX_MEDIA_CHECK_BYTES);
+      if (!bodyRead.ok) {
+        return logAndReturn(
+          deps.logger,
+          route,
+          startMs,
+          now,
+          jsonResponse(
+            {
+              error:
+                bodyRead.kind === 'too-large'
+                  ? 'This photo is larger than 10 MB. Please choose a smaller photo. (field: imageBase64)'
+                  : 'The photo request encoding could not be read. (field: encoding)',
+              field: bodyRead.kind === 'too-large' ? 'imageBase64' : 'encoding',
+            },
+            bodyRead.kind === 'too-large' ? 413 : 400
+          )
+        );
+      }
+
+      let rawJson: unknown;
+      try {
+        rawJson = JSON.parse(bodyRead.text);
+      } catch {
+        return logAndReturn(
+          deps.logger,
+          route,
+          startMs,
+          now,
+          jsonResponse(
+            {
+              error: 'The request format could not be read. (field: body)',
+              field: 'body',
+            },
+            400
+          )
+        );
+      }
+
+      if (!isPlainObject(rawJson)) {
+        return logAndReturn(
+          deps.logger,
+          route,
+          startMs,
+          now,
+          jsonResponse(
+            {
+              error: 'Please send a photo to check. (field: body)',
+              field: 'body',
+            },
+            400
+          )
+        );
+      }
+
+      if (
+        typeof rawJson.mimeType !== 'string' ||
+        !VALID_IMAGE_MIMES.has(rawJson.mimeType.trim().toLowerCase())
+      ) {
+        return logAndReturn(
+          deps.logger,
+          route,
+          startMs,
+          now,
+          jsonResponse(
+            {
+              error:
+                'Please choose a JPEG, PNG, or WebP photo. (field: mimeType)',
+              field: 'mimeType',
+            },
+            400
+          )
+        );
+      }
+
+      if (
+        typeof rawJson.imageBase64 !== 'string' ||
+        rawJson.imageBase64.trim().length === 0
+      ) {
+        return logAndReturn(
+          deps.logger,
+          route,
+          startMs,
+          now,
+          jsonResponse(
+            {
+              error: 'Please include the photo data to check. (field: imageBase64)',
+              field: 'imageBase64',
+            },
+            400
+          )
+        );
+      }
+
+      const decodedBytes = decodeBase64ToBytes(rawJson.imageBase64);
+      if (!decodedBytes || decodedBytes.byteLength === 0) {
+        return logAndReturn(
+          deps.logger,
+          route,
+          startMs,
+          now,
+          jsonResponse(
+            {
+              error:
+                'The photo data format could not be read. (field: imageBase64)',
+              field: 'imageBase64',
+            },
+            400
+          )
+        );
+      }
+
+      if (decodedBytes.byteLength > MAX_DECODED_IMAGE_BYTES) {
+        return logAndReturn(
+          deps.logger,
+          route,
+          startMs,
+          now,
+          jsonResponse(
+            {
+              error:
+                'This photo is larger than 10 MB. Please choose a smaller photo. (field: imageBase64)',
+              field: 'imageBase64',
+            },
+            413
+          )
+        );
+      }
+
+      const cleanBase64 = rawJson.imageBase64.replace(/\s+/g, '');
+      const mimeType = rawJson.mimeType.trim().toLowerCase();
+      const fileName =
+        typeof rawJson.fileName === 'string' &&
+        rawJson.fileName.trim().length > 0 &&
+        !hasLoneSurrogate(rawJson.fileName)
+          ? rawJson.fileName.trim().slice(0, 200)
+          : undefined;
+
+      const provenance = await inspectProvenance(decodedBytes);
+      const baseline = mediaResult(provenance);
+      let output: MediaCheckRouteResponse = {
+        ...baseline,
+        source: 'device',
+      };
+
+      const envSource = deps.env ?? getProcessEnv();
+      const apiKey = envSource.AI_API_KEY || envSource.GEMINI_API_KEY;
+
+      if (apiKey && deps.mediaChecker) {
+        try {
+          const aiCandidate = await deps.mediaChecker(
+            {
+              imageBase64: cleanBase64,
+              mimeType,
+              ...(fileName ? { fileName } : {}),
+            },
+            apiKey
+          );
+          output = mergeMediaCheckResult(aiCandidate, baseline);
         } catch {
           output = { ...baseline, source: 'device' };
         }
