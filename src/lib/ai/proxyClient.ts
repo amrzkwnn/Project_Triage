@@ -1,9 +1,11 @@
 import type {
   Channel,
   ClaritySummary,
+  DetectedEvent,
   GroupCategory,
   PriorityType,
   Result,
+  Verdict,
 } from '@/lib/types';
 
 export type DecideProxyRequest = {
@@ -18,6 +20,8 @@ export type DecideProxyResponse = {
   group?: GroupCategory;
   priority?: PriorityType;
   confidence?: number;
+  scamWarning?: Verdict;
+  detectedEvent?: DetectedEvent;
 };
 
 export type DecideProxyError = {

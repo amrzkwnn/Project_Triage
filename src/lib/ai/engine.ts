@@ -2,16 +2,21 @@ import type {
   Channel,
   ClaritySummary,
   DecisionTier,
+  DetectedEvent,
   GroupCategory,
   InboxItemDraft,
   PriorityType,
+  Proposal,
+  RedFlagCategory,
   Result,
   Settings,
   Verdict,
+  VerdictValue,
 } from '@/lib/types';
 import type { Vault } from '@/lib/vault/schema';
 import { CHANNEL_LABELS, mayCallAi } from '@/lib/vault/consent';
 import { buildAuditEntry } from '@/lib/vault/audit';
+import { parsePlainDate, parsePlainTime } from '@/lib/calendar/dates';
 import type { ClassifyContext } from '@/lib/inbox/classify';
 import { analyzeWithRules, type Analysis } from '@/lib/ai/rules';
 import { assignTier } from '@/lib/ai/tiering';
@@ -28,6 +33,22 @@ const VALID_PRIORITIES = new Set<PriorityType>([
   'Social',
   'Promotion',
 ]);
+const VALID_VERDICT_VALUES = new Set<VerdictValue>([
+  'safe',
+  'caution',
+  'danger',
+]);
+const VALID_RED_FLAGS = new Set<RedFlagCategory>([
+  'urgency',
+  'secrecy',
+  'payment',
+  'domain-mismatch',
+]);
+const VERDICT_SEVERITY: Record<VerdictValue, number> = {
+  safe: 0,
+  caution: 1,
+  danger: 2,
+};
 
 const FALLBACK_NOTICE = 'A simpler on-device check was used.';
 const AUDIT_WRITE_FAILED_MESSAGE =
@@ -45,9 +66,74 @@ function isNonEmptyString(value: unknown): value is string {
   return typeof value === 'string' && value.trim().length > 0;
 }
 
+function sanitizeOptionalDetectedEvent(raw: unknown): DetectedEvent | undefined {
+  if (!isPlainObject(raw)) {
+    return undefined;
+  }
+  if (
+    typeof raw.date !== 'string' ||
+    typeof raw.time !== 'string' ||
+    !isNonEmptyString(raw.title)
+  ) {
+    return undefined;
+  }
+  const date = raw.date.trim();
+  const time = raw.time.trim();
+  if (!parsePlainDate(date).ok || !parsePlainTime(time).ok) {
+    return undefined;
+  }
+  const event: DetectedEvent = {
+    date,
+    time,
+    title: raw.title.trim().slice(0, 100),
+  };
+  if (isNonEmptyString(raw.location)) {
+    event.location = raw.location.trim().slice(0, 100);
+  }
+  return event;
+}
+
+function sanitizeOptionalVerdict(raw: unknown): Verdict | undefined {
+  if (!isPlainObject(raw)) {
+    return undefined;
+  }
+  if (
+    typeof raw.value !== 'string' ||
+    !VALID_VERDICT_VALUES.has(raw.value as VerdictValue)
+  ) {
+    return undefined;
+  }
+  const reasons = Array.isArray(raw.reasons)
+    ? raw.reasons
+        .filter((r): r is string => isNonEmptyString(r))
+        .map((r) => r.trim().slice(0, 150))
+        .slice(0, 3)
+    : [];
+  if (reasons.length === 0) {
+    return undefined;
+  }
+  const flags = Array.isArray(raw.flags)
+    ? Array.from(
+        new Set(
+          raw.flags.filter(
+            (f): f is RedFlagCategory =>
+              typeof f === 'string' &&
+              VALID_RED_FLAGS.has(f as RedFlagCategory)
+          )
+        )
+      )
+    : [];
+  return {
+    value: raw.value as VerdictValue,
+    flags,
+    reasons,
+  };
+}
+
 function mergeProxyResponse(
   baseline: Analysis,
-  response: DecideProxyResponse
+  response: DecideProxyResponse,
+  itemId?: string
 ): Analysis | null {
   const raw = response as Record<string, unknown>;
 
@@ -116,13 +202,99 @@ function mergeProxyResponse(
     };
   }
 
-  return {
+  const nextProposals: Proposal[] = baseline.proposals.map((p) => ({ ...p }));
+  const resolvedItemId =
+    nextProposals[0]?.itemId ??
+    (isNonEmptyString(itemId) ? itemId.trim() : 'draft');
+
+  // Optional AI detectedEvent enrichment (validated with parsePlainDate + parsePlainTime)
+  let nextDetectedEvent = baseline.detectedEvent;
+  if (raw.detectedEvent !== undefined) {
+    const validEvent = sanitizeOptionalDetectedEvent(raw.detectedEvent);
+    if (validEvent !== undefined) {
+      nextDetectedEvent = validEvent;
+      const existingIdx = nextProposals.findIndex(
+        (p) => p.kind === 'forwardToCalendar'
+      );
+      if (existingIdx >= 0) {
+        nextProposals[existingIdx] = {
+          ...nextProposals[existingIdx],
+          event: validEvent,
+        };
+      } else {
+        nextProposals.unshift({
+          id: `${resolvedItemId}:forwardToCalendar`,
+          kind: 'forwardToCalendar',
+          label: 'Add to Calendar',
+          itemId: resolvedItemId,
+          event: validEvent,
+        });
+      }
+    }
+  }
+
+  // Optional AI scamWarning enrichment (strict safety monotonicity: never downgrade danger)
+  let nextVerdict = baseline.verdict;
+  let nextScamWarning = baseline.scamWarning;
+  if (raw.scamWarning !== undefined) {
+    const incoming = sanitizeOptionalVerdict(raw.scamWarning);
+    if (incoming !== undefined) {
+      const baseSeverity = baseline.verdict
+        ? VERDICT_SEVERITY[baseline.verdict.value]
+        : 0;
+      const incomingSeverity = VERDICT_SEVERITY[incoming.value];
+
+      if (
+        baseline.verdict?.value === 'danger' &&
+        incoming.value !== 'danger'
+      ) {
+        // Safety monotonicity: never downgrade deterministic danger
+        nextVerdict = baseline.verdict;
+        nextScamWarning = baseline.scamWarning;
+      } else if (
+        incomingSeverity > baseSeverity ||
+        (incomingSeverity === baseSeverity && incomingSeverity > 0)
+      ) {
+        const mergedFlags = Array.from(
+          new Set([...(baseline.verdict?.flags ?? []), ...incoming.flags])
+        );
+        nextVerdict = {
+          value: incoming.value,
+          flags: mergedFlags,
+          reasons: incoming.reasons,
+        };
+        nextScamWarning = true;
+
+        if (!nextProposals.some((p) => p.kind === 'checkScam')) {
+          nextProposals.push({
+            id: `${resolvedItemId}:checkScam`,
+            kind: 'checkScam',
+            label: 'Check for Scam',
+            itemId: resolvedItemId,
+          });
+        }
+      }
+    }
+  }
+
+  const merged: Analysis = {
     ...baseline,
     group: nextGroup,
     priority: nextPriority,
     confidence: nextConfidence,
     summary: nextSummary,
+    scamWarning: nextScamWarning,
+    proposals: nextProposals,
   };
+
+  if (nextDetectedEvent !== undefined) {
+    merged.detectedEvent = nextDetectedEvent;
+  }
+  if (nextVerdict !== undefined) {
+    merged.verdict = nextVerdict;
+  }
+
+  return merged;
 }
 
 export async function analyze(
@@ -220,7 +392,7 @@ export async function analyze(
     };
   }
 
-  const merged = mergeProxyResponse(rulesAnalysis, proxyRes.value);
+  const merged = mergeProxyResponse(rulesAnalysis, proxyRes.value, item.id);
   if (merged === null) {
     return {
       ok: true,

@@ -9,6 +9,7 @@ import {
   RefreshCw,
   ShieldAlert,
   ShieldCheck,
+  Sparkles,
   Upload,
 } from 'lucide-react';
 import { BackToHome } from '@/components/BackToHome';
@@ -23,6 +24,7 @@ import {
   toggleChecklistStep,
   validateCodeWord,
 } from '@/lib/scam/habits';
+import { checkMessageWithAi } from '@/lib/scam/aiScamClient';
 import { checkText, type ScamCheckOutput } from '@/lib/scam/verdict';
 import { confirmFromTap } from '@/lib/actions/confirmation';
 import { canShowAskFamily, shareItemWithFamily } from '@/lib/actions/sharing';
@@ -115,8 +117,10 @@ export type ScamShieldPageProps = {
   initialScreenshotName?: string;
   initialScreenshotOcrText?: string;
   initialVerdict?: ScamCheckOutput;
+  initialCheckedBy?: 'ai' | 'device';
   initialError?: string;
   extractScreenshotText?: (file: File) => Promise<string>;
+  fetchFn?: typeof fetch;
   vault?: Vault;
   onNavigate?: (href: string) => void;
 };
@@ -128,8 +132,10 @@ export function ScamShieldPage({
   initialScreenshotName,
   initialScreenshotOcrText = '',
   initialVerdict,
+  initialCheckedBy,
   initialError,
   extractScreenshotText,
+  fetchFn,
   vault,
   onNavigate,
 }: ScamShieldPageProps) {
@@ -163,6 +169,19 @@ export function ScamShieldPage({
     }
     return undefined;
   });
+  const [checkedBy, setCheckedBy] = useState<'ai' | 'device' | undefined>(() => {
+    if (initialCheckedBy) return initialCheckedBy;
+    if (
+      initialVerdict ||
+      resolvedInitialText.trim().length > 0 ||
+      initialScreenshotOcrText.trim().length > 0
+    ) {
+      return 'device';
+    }
+    return undefined;
+  });
+  const [checking, setChecking] = useState<boolean>(false);
+  const [checkNotice, setCheckNotice] = useState<string | undefined>(undefined);
   const [checkError, setCheckError] = useState<string | undefined>(
     initialError
   );
@@ -209,6 +228,7 @@ export function ScamShieldPage({
       });
       if (evaluated.ok) {
         setVerdict(evaluated.verdict);
+        setCheckedBy('device');
       }
     }
   }, [initialText, initialQuery, screenshotName, screenshotOcrText]);
@@ -222,8 +242,9 @@ export function ScamShieldPage({
     }
   };
 
-  const handleRunCheck = () => {
+  const handleRunCheck = async () => {
     setCheckError(undefined);
+    setCheckNotice(undefined);
     const evaluated = evaluateScamCheckInput({
       messageText,
       screenshotName,
@@ -231,20 +252,57 @@ export function ScamShieldPage({
     });
     if (!evaluated.ok) {
       setVerdict(undefined);
+      setCheckedBy(undefined);
       setCheckError(evaluated.message);
       setStatusMessage(evaluated.message);
       return;
     }
-    const result = evaluated.verdict;
-    setVerdict(result);
-    setAskFamilyConfirmOpen(false);
-    setStatusMessage(
-      result.value === 'danger'
-        ? 'Check finished: Likely scam. Do not click or pay.'
-        : result.value === 'caution'
-          ? 'Check finished: Be careful and verify first.'
-          : 'Check finished: No warning signs were found.'
-    );
+
+    const trimmedMessage = messageText.trim();
+    const trimmedOcr = screenshotOcrText.trim();
+    const textToCheck =
+      trimmedMessage.length === 0
+        ? trimmedOcr
+        : trimmedOcr.length > 0
+          ? `${messageText}\n${trimmedOcr}`
+          : messageText;
+
+    if (settings.allowAiReading) {
+      setChecking(true);
+      setStatusMessage('Checking with AI Helper...');
+    }
+
+    try {
+      const aiRes = await checkMessageWithAi({
+        text: textToCheck,
+        settings,
+        vault: resolvedVault,
+        fetchFn,
+      });
+
+      if (!aiRes.ok) {
+        setVerdict(undefined);
+        setCheckedBy(undefined);
+        setCheckError(aiRes.message);
+        setStatusMessage(aiRes.message);
+        return;
+      }
+
+      const result = aiRes.verdict;
+      setVerdict(result);
+      setCheckedBy(aiRes.checkedBy);
+      setCheckNotice(aiRes.notice);
+      setAskFamilyConfirmOpen(false);
+      setStatusMessage(
+        result.value === 'danger'
+          ? 'Check finished: Likely scam. Do not click or pay.'
+          : result.value === 'caution'
+            ? 'Check finished: Be careful and verify first.'
+            : 'Check finished: No warning signs were found.'
+      );
+    } finally {
+      setChecking(false);
+    }
   };
 
   const handleScreenshotChange = async (
@@ -474,11 +532,20 @@ export function ScamShieldPage({
           <SeniorButton
             variant="primary"
             icon={<ShieldAlert size={22} />}
-            onClick={handleRunCheck}
+            onClick={() => void handleRunCheck()}
+            disabled={checking}
           >
-            Is This Safe?
+            {checking ? 'Checking with AI Helper...' : 'Is This Safe?'}
           </SeniorButton>
         </div>
+
+        {!settings.allowAiReading ? (
+          <p className="rounded-chip border border-line bg-canvas p-4 text-[18px] leading-relaxed text-muted">
+            Tip: Right now, messages are checked using built-in safety rules on
+            this device. You can turn on AI Reading in My Data if you would like
+            extra AI Helper checks for subtle scams.
+          </p>
+        ) : null}
 
         {checkError ? (
           <div
@@ -494,7 +561,7 @@ export function ScamShieldPage({
             <SeniorButton
               variant="warn"
               icon={<RefreshCw size={20} />}
-              onClick={handleRunCheck}
+              onClick={() => void handleRunCheck()}
             >
               Try Again
             </SeniorButton>
@@ -503,6 +570,40 @@ export function ScamShieldPage({
 
         {verdict ? (
           <div className="space-y-4">
+            {checkedBy ? (
+              <div className="flex flex-wrap items-center gap-3">
+                <span
+                  data-badge="true"
+                  className={
+                    checkedBy === 'ai'
+                      ? 'inline-flex items-center gap-2 rounded-full border-2 border-brand bg-brand-wash px-3.5 py-1.5 text-[16px] font-bold text-brand-deep shadow-pill'
+                      : 'inline-flex items-center gap-2 rounded-full border-2 border-line bg-canvas px-3.5 py-1.5 text-[16px] font-bold text-ink shadow-pill'
+                  }
+                >
+                  <span
+                    aria-hidden="true"
+                    className="inline-flex shrink-0 text-brand"
+                  >
+                    {checkedBy === 'ai' ? (
+                      <Sparkles size={18} />
+                    ) : (
+                      <ShieldCheck size={18} />
+                    )}
+                  </span>
+                  <span>
+                    {checkedBy === 'ai'
+                      ? 'Checked with AI Helper'
+                      : 'Checked on This Device'}
+                  </span>
+                </span>
+                {checkNotice ? (
+                  <span className="text-[16px] font-medium text-muted">
+                    {checkNotice}
+                  </span>
+                ) : null}
+              </div>
+            ) : null}
+
             <TrafficLightCard
               verdict={verdict}
               showAskFamily={verdict.showAskFamily && canShareWithFamily}

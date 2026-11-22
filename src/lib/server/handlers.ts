@@ -2,13 +2,19 @@ import {
   ALL_CHANNELS,
   type Channel,
   type ClaritySummary,
+  type DetectedEvent,
   type GroupCategory,
   type PriorityType,
+  type RedFlagCategory,
+  type Verdict,
+  type VerdictValue,
 } from '@/lib/types';
 import { hasLoneSurrogate, parseIngest } from '@/lib/inbox/parse';
 import { classify } from '@/lib/inbox/classify';
 import { detectEvent } from '@/lib/inbox/events';
+import { parsePlainDate, parsePlainTime } from '@/lib/calendar/dates';
 import { buildClaritySummary } from '@/lib/ai/summary';
+import { checkText, type ScamCheckOutput } from '@/lib/scam/verdict';
 import { TokenRegistry } from '@/lib/server/auth';
 import { createRateLimiter, type RateLimiter } from '@/lib/server/rateLimit';
 import type { EncryptedRelayStore } from '@/lib/server/relay';
@@ -19,7 +25,9 @@ const defaultRateLimiter = createRateLimiter();
 
 export const MAX_INGEST_BYTES = 10 * 1024 * 1024;
 export const MAX_DECIDE_BYTES = 64 * 1024;
+export const MAX_SCAM_CHECK_BYTES = 32 * 1024;
 const MAX_DECIDE_TEXT_LENGTH = 10_000;
+const MAX_SCAM_CHECK_TEXT_LENGTH = 5_000;
 
 const VALID_CHANNELS = new Set<string>(ALL_CHANNELS);
 const VALID_GROUPS = new Set<GroupCategory>(['Personal', 'Family', 'Others']);
@@ -28,6 +36,22 @@ const VALID_PRIORITIES = new Set<PriorityType>([
   'Social',
   'Promotion',
 ]);
+const VALID_VERDICT_VALUES = new Set<VerdictValue>([
+  'safe',
+  'caution',
+  'danger',
+]);
+const VALID_RED_FLAGS = new Set<RedFlagCategory>([
+  'urgency',
+  'secrecy',
+  'payment',
+  'domain-mismatch',
+]);
+const VERDICT_SEVERITY: Record<VerdictValue, number> = {
+  safe: 0,
+  caution: 1,
+  danger: 2,
+};
 
 export type IngestRouteDeps = {
   tokenRegistry: TokenRegistry;
@@ -42,12 +66,19 @@ export type DecideOutput = {
   group: GroupCategory;
   priority: PriorityType;
   confidence: number;
+  scamWarning?: Verdict;
+  detectedEvent?: DetectedEvent;
 };
 
 export type DecideAiProvider = (
   item: { channel: Channel; text: string },
   apiKey: string
 ) => Promise<DecideOutput>;
+
+export type ScamCheckAiProvider = (
+  text: string,
+  apiKey: string
+) => Promise<Partial<ScamCheckOutput>>;
 
 export type DecideRouteDeps = {
   logger: SafeLogger;
@@ -57,6 +88,16 @@ export type DecideRouteDeps = {
   now?: () => number;
   env?: Record<string, string | undefined>;
   aiProvider?: DecideAiProvider;
+};
+
+export type ScamCheckRouteDeps = {
+  logger: SafeLogger;
+  tokenRegistry?: TokenRegistry;
+  rateLimiter?: RateLimiter;
+  requireAuth?: boolean;
+  now?: () => number;
+  env?: Record<string, string | undefined>;
+  scamChecker?: ScamCheckAiProvider;
 };
 
 function getProcessEnv(): Record<string, string | undefined> {
@@ -620,6 +661,71 @@ export function createIngestAckPostHandler(
   };
 }
 
+function sanitizeDetectedEvent(raw: unknown): DetectedEvent | undefined {
+  if (!isPlainObject(raw)) {
+    return undefined;
+  }
+  if (
+    typeof raw.date !== 'string' ||
+    typeof raw.time !== 'string' ||
+    typeof raw.title !== 'string' ||
+    raw.title.trim().length === 0
+  ) {
+    return undefined;
+  }
+  const date = raw.date.trim();
+  const time = raw.time.trim();
+  if (!parsePlainDate(date).ok || !parsePlainTime(time).ok) {
+    return undefined;
+  }
+  const event: DetectedEvent = {
+    date,
+    time,
+    title: raw.title.trim().slice(0, 100),
+  };
+  if (typeof raw.location === 'string' && raw.location.trim().length > 0) {
+    event.location = raw.location.trim().slice(0, 100);
+  }
+  return event;
+}
+
+function sanitizeVerdict(raw: unknown): Verdict | undefined {
+  if (!isPlainObject(raw)) {
+    return undefined;
+  }
+  if (
+    typeof raw.value !== 'string' ||
+    !VALID_VERDICT_VALUES.has(raw.value as VerdictValue)
+  ) {
+    return undefined;
+  }
+  const reasons = Array.isArray(raw.reasons)
+    ? raw.reasons
+        .filter((r): r is string => typeof r === 'string' && r.trim().length > 0)
+        .map((r) => r.trim().slice(0, 150))
+        .slice(0, 3)
+    : [];
+  if (reasons.length === 0) {
+    return undefined;
+  }
+  const flags = Array.isArray(raw.flags)
+    ? Array.from(
+        new Set(
+          raw.flags.filter(
+            (f): f is RedFlagCategory =>
+              typeof f === 'string' &&
+              VALID_RED_FLAGS.has(f as RedFlagCategory)
+          )
+        )
+      )
+    : [];
+  return {
+    value: raw.value as VerdictValue,
+    flags,
+    reasons,
+  };
+}
+
 function deterministicDecide(item: {
   channel: Channel;
   text: string;
@@ -628,6 +734,7 @@ function deterministicDecide(item: {
     source: item.channel,
     text: item.text,
   });
+  const scamCheck = checkText(item.text);
   const detectedEvent = detectEvent(item.text);
   const summary = buildClaritySummary(
     { source: item.channel, text: item.text },
@@ -644,12 +751,42 @@ function deterministicDecide(item: {
       ? 0.85
       : 0.75;
 
-  return {
+  const output: DecideOutput = {
     summary,
     group: classification.group,
     priority: classification.priority,
     confidence,
   };
+
+  if (detectedEvent !== undefined) {
+    output.detectedEvent = detectedEvent;
+  }
+
+  if (scamCheck.value === 'danger') {
+    output.scamWarning = {
+      value: 'danger',
+      reasons: scamCheck.reasons,
+      flags: scamCheck.flags,
+    };
+  } else if (classification.scamWarning) {
+    output.scamWarning = {
+      value: 'danger',
+      reasons:
+        scamCheck.value === 'caution'
+          ? scamCheck.reasons
+          : ['Urgent message with payment link from unknown sender'],
+      flags:
+        scamCheck.flags.length > 0 ? scamCheck.flags : ['urgency', 'payment'],
+    };
+  } else if (scamCheck.value === 'caution') {
+    output.scamWarning = {
+      value: 'caution',
+      reasons: scamCheck.reasons,
+      flags: scamCheck.flags,
+    };
+  }
+
+  return output;
 }
 
 function sanitizeDecideOutput(
@@ -689,7 +826,230 @@ function sanitizeDecideOutput(
         }
       : fallback.summary;
 
-  return { summary, group, priority, confidence };
+  const sanitizedEvent = sanitizeDetectedEvent(candidate.detectedEvent);
+  const detectedEvent = sanitizedEvent ?? fallback.detectedEvent;
+
+  const sanitizedScam = sanitizeVerdict(candidate.scamWarning);
+  let scamWarning: Verdict | undefined = fallback.scamWarning;
+  if (sanitizedScam !== undefined) {
+    const fallbackSeverity = fallback.scamWarning
+      ? VERDICT_SEVERITY[fallback.scamWarning.value]
+      : 0;
+    const candidateSeverity = VERDICT_SEVERITY[sanitizedScam.value];
+
+    if (
+      fallback.scamWarning?.value === 'danger' &&
+      sanitizedScam.value !== 'danger'
+    ) {
+      // Safety monotonicity: never downgrade deterministic danger
+      scamWarning = fallback.scamWarning;
+    } else if (
+      candidateSeverity > fallbackSeverity ||
+      (candidateSeverity === fallbackSeverity && candidateSeverity > 0)
+    ) {
+      const mergedFlags = Array.from(
+        new Set([...(fallback.scamWarning?.flags ?? []), ...sanitizedScam.flags])
+      );
+      scamWarning = {
+        value: sanitizedScam.value,
+        flags: mergedFlags,
+        reasons: sanitizedScam.reasons,
+      };
+    }
+  }
+
+  const result: DecideOutput = { summary, group, priority, confidence };
+  if (detectedEvent !== undefined) {
+    result.detectedEvent = detectedEvent;
+  }
+  if (scamWarning !== undefined) {
+    result.scamWarning = scamWarning;
+  }
+  return result;
+}
+
+function mergeScamCheckResult(
+  candidate: Partial<ScamCheckOutput> | unknown,
+  baseline: ScamCheckOutput
+): ScamCheckOutput & { source: 'ai' | 'device' } {
+  const sanitized = sanitizeVerdict(candidate);
+  if (!sanitized) {
+    return { ...baseline, source: 'device' };
+  }
+
+  const baselineSeverity = VERDICT_SEVERITY[baseline.value];
+  const candidateSeverity = VERDICT_SEVERITY[sanitized.value];
+
+  // Safety monotonicity: never downgrade deterministic danger or caution
+  if (candidateSeverity < baselineSeverity) {
+    return { ...baseline, source: 'device' };
+  }
+
+  const raw = candidate as Record<string, unknown>;
+  const mergedFlags = Array.from(new Set([...baseline.flags, ...sanitized.flags]));
+  const instruction =
+    typeof raw.instruction === 'string' && raw.instruction.trim().length > 0
+      ? raw.instruction.trim().slice(0, 150)
+      : sanitized.value === 'danger'
+        ? 'Do not click or pay'
+        : sanitized.value === 'caution'
+          ? 'Hang up and call back using a number saved in your contacts'
+          : undefined;
+
+  const showAskFamily =
+    sanitized.value === 'danger'
+      ? true
+      : typeof raw.showAskFamily === 'boolean'
+        ? raw.showAskFamily
+        : baseline.showAskFamily;
+
+  const merged: ScamCheckOutput & { source: 'ai' | 'device' } = {
+    value: sanitized.value,
+    flags: mergedFlags,
+    reasons: sanitized.reasons,
+    showAskFamily,
+    source: 'ai',
+  };
+  if (instruction !== undefined) {
+    merged.instruction = instruction;
+  }
+  return merged;
+}
+
+export function createScamCheckPostHandler(
+  deps: ScamCheckRouteDeps
+): (req: Request) => Promise<Response> {
+  const now = deps.now ?? Date.now;
+  const route = '/api/scam-check';
+  const requireAuth = deps.requireAuth !== false;
+  const tokenRegistry = deps.tokenRegistry ?? defaultTokenRegistry;
+  const rateLimiter = deps.rateLimiter ?? defaultRateLimiter;
+
+  return async function POST(req: Request): Promise<Response> {
+    const startMs = now();
+    try {
+      if (requireAuth) {
+        const auth = tokenRegistry.verifyToken(req);
+        if (!auth.ok) {
+          return logAndReturn(
+            deps.logger,
+            route,
+            startMs,
+            now,
+            jsonResponse(auth.body, auth.status)
+          );
+        }
+
+        const rl = rateLimiter.check(auth.tokenHash, now());
+        if (!rl.allowed) {
+          return logAndReturn(
+            deps.logger,
+            route,
+            startMs,
+            now,
+            jsonResponse(rl.body, rl.status)
+          );
+        }
+      }
+
+      const bodyRead = await readUtf8BodyWithLimit(req, MAX_SCAM_CHECK_BYTES);
+      if (!bodyRead.ok) {
+        return logAndReturn(
+          deps.logger,
+          route,
+          startMs,
+          now,
+          jsonResponse(
+            {
+              error:
+                bodyRead.kind === 'too-large'
+                  ? 'This message is longer than 5,000 characters. Please shorten it and check again. (field: text)'
+                  : 'The message encoding could not be read. (field: encoding)',
+              field: bodyRead.kind === 'too-large' ? 'text' : 'encoding',
+            },
+            400
+          )
+        );
+      }
+
+      let rawJson: unknown;
+      try {
+        rawJson = JSON.parse(bodyRead.text);
+      } catch {
+        return logAndReturn(
+          deps.logger,
+          route,
+          startMs,
+          now,
+          jsonResponse(
+            {
+              error: 'The request format could not be read. (field: body)',
+              field: 'body',
+            },
+            400
+          )
+        );
+      }
+
+      if (
+        !isPlainObject(rawJson) ||
+        typeof rawJson.text !== 'string' ||
+        rawJson.text.trim().length === 0 ||
+        rawJson.text.length > MAX_SCAM_CHECK_TEXT_LENGTH ||
+        hasLoneSurrogate(rawJson.text)
+      ) {
+        return logAndReturn(
+          deps.logger,
+          route,
+          startMs,
+          now,
+          jsonResponse(
+            {
+              error:
+                'Please send message text up to 5,000 characters to check. (field: text)',
+              field: 'text',
+            },
+            400
+          )
+        );
+      }
+
+      const text = rawJson.text;
+      const baseline = checkText(text);
+      let output: ScamCheckOutput & { source: 'ai' | 'device' } = {
+        ...baseline,
+        source: 'device',
+      };
+
+      const envSource = deps.env ?? getProcessEnv();
+      const apiKey = envSource.AI_API_KEY || envSource.GEMINI_API_KEY;
+
+      if (apiKey && deps.scamChecker) {
+        try {
+          const aiCandidate = await deps.scamChecker(text, apiKey);
+          output = mergeScamCheckResult(aiCandidate, baseline);
+        } catch {
+          output = { ...baseline, source: 'device' };
+        }
+      }
+
+      return logAndReturn(
+        deps.logger,
+        route,
+        startMs,
+        now,
+        jsonResponse(output, 200)
+      );
+    } catch {
+      return logAndReturn(
+        deps.logger,
+        route,
+        startMs,
+        now,
+        jsonResponse({ error: 'Could not process request.' }, 500)
+      );
+    }
+  };
 }
 
 export function createDecidePostHandler(

@@ -95,6 +95,9 @@ export async function dispatchApiRequest(
     case '/api/decide':
       if (method !== 'POST') return methodNotAllowedResponse('POST');
       break;
+    case '/api/scam-check':
+      if (method !== 'POST') return methodNotAllowedResponse('POST');
+      break;
     default:
       return null;
   }
@@ -125,6 +128,23 @@ export async function dispatchApiRequest(
         logger: rt.logger,
         now: rt.now,
         aiProvider,
+        env: effectiveEnv,
+      })(req);
+    }
+    case '/api/scam-check': {
+      const effectiveEnv = envOverride ?? rt.env;
+      const modelOverride = effectiveEnv?.GEMINI_MODEL?.trim();
+      const scamChecker =
+        modelOverride &&
+        geminiProvider.isDefaultGeminiScamChecker(rt.scamChecker)
+          ? geminiProvider.createGeminiScamChecker({ model: modelOverride })
+          : rt.scamChecker;
+      return handlers.createScamCheckPostHandler({
+        tokenRegistry: rt.tokenRegistry,
+        rateLimiter: rt.rateLimiter,
+        logger: rt.logger,
+        now: rt.now,
+        scamChecker,
         env: effectiveEnv,
       })(req);
     }

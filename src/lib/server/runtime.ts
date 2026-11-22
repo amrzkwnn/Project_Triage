@@ -1,9 +1,15 @@
 import { TokenRegistry } from '@/lib/server/auth';
-import { createGeminiAiProvider } from '@/lib/server/geminiProvider';
+import {
+  createGeminiAiProvider,
+  createGeminiScamChecker,
+} from '@/lib/server/geminiProvider';
 import { createRateLimiter, type RateLimiter } from '@/lib/server/rateLimit';
 import { EncryptedRelayStore } from '@/lib/server/relay';
 import { createSafeLogger, type SafeLogger } from '@/lib/server/safeLog';
-import type { DecideAiProvider } from '@/lib/server/handlers';
+import type {
+  DecideAiProvider,
+  ScamCheckAiProvider,
+} from '@/lib/server/handlers';
 
 export type ServerRuntime = {
   tokenRegistry: TokenRegistry;
@@ -12,6 +18,7 @@ export type ServerRuntime = {
   logger: SafeLogger;
   now: () => number;
   aiProvider?: DecideAiProvider;
+  scamChecker?: ScamCheckAiProvider;
   env?: Record<string, string | undefined>;
 };
 
@@ -23,6 +30,7 @@ function createDefaultRuntime(): ServerRuntime {
     logger: createSafeLogger(),
     now: () => Date.now(),
     aiProvider: createGeminiAiProvider(),
+    scamChecker: createGeminiScamChecker(),
   };
 }
 
