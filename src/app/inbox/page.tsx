@@ -1327,7 +1327,7 @@ export function UnifiedInboxPage({
             (emailAccount || emailConnectionState !== 'disconnected') ? (
               <p className="text-[16px] text-muted tnum">
                 Last checked: {formatCheckedTime(lastCheckStatus.checkedAtIso)}{' '}
-                Ã¢â‚¬Â¢ {lastCheckStatus.checkedCount}{' '}
+                • {lastCheckStatus.checkedCount}{' '}
                 {lastCheckStatus.checkedCount === 1 ? 'email' : 'emails'}{' '}
                 checked, {lastCheckStatus.newCount} new
               </p>
@@ -2055,12 +2055,12 @@ export function UnifiedInboxPage({
                       <p className="text-[18px] text-ink tnum">
                         Date: {pendingCalendarForward.event.date}
                         {pendingCalendarForward.event.time
-                          ? ` Ã¢â‚¬Â¢ Time: ${pendingCalendarForward.event.time}`
+                          ? ` • Time: ${pendingCalendarForward.event.time}`
                           : ''}
                         {pendingCalendarForward.event.location
-                          ? ` Ã¢â‚¬Â¢ Location: ${pendingCalendarForward.event.location}`
+                          ? ` • Location: ${pendingCalendarForward.event.location}`
                           : ''}
-                        {` Ã¢â‚¬Â¢ Category: ${
+                        {` • Category: ${
                           pendingCalendarForward.event.category ??
                           inferCalendarCategory(
                             `${pendingCalendarForward.event.title} ${pendingCalendarForward.item.text}`
