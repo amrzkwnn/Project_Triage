@@ -18,10 +18,21 @@ export function sortInbox(items: readonly InboxItem[]): InboxItem[] {
 
 export function filterByTab(
   items: readonly InboxItem[],
-  tab: GroupCategory | 'All'
+  tab: GroupCategory | 'All' | 'Promotion'
 ): InboxItem[] {
-  const filtered =
-    tab === 'All' ? items : items.filter((item) => item.group === tab);
+  if (tab === 'All') {
+    return sortInbox(items);
+  }
+  if (tab === 'Promotion') {
+    const matched = items.filter(
+      (item) => item.priority === 'Promotion' || item.group === 'Promotion'
+    );
+    return sortInbox(matched);
+  }
+  const target = tab.trim().toLowerCase();
+  const filtered = items.filter(
+    (item) => item.group.trim().toLowerCase() === target
+  );
   return sortInbox(filtered);
 }
 

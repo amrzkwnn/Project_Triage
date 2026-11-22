@@ -7,7 +7,9 @@ import {
   Camera,
   Check,
   Eye,
+  FolderPlus,
   Inbox,
+  Lock,
   Mail,
   Plus,
   RefreshCw,
@@ -15,6 +17,7 @@ import {
   ShieldAlert,
   Smartphone,
   Sparkles,
+  Trash2,
   Users,
   X,
 } from 'lucide-react';
@@ -41,7 +44,13 @@ import {
   type EmailCheckStatusSnapshot,
   type EmailProvider,
 } from '@/lib/inbox/emailClient';
-import { filterByTab, filterPromotions } from '@/lib/inbox/order';
+import {
+  addInboxCategory,
+  deleteInboxCategory,
+  getVisibleInboxCategories,
+  isProtectedInboxCategory,
+} from '@/lib/inbox/categories';
+import { filterByTab } from '@/lib/inbox/order';
 import { normalizeSource, parseIngestQuery } from '@/lib/inbox/parse';
 import { createPrescriptionItem } from '@/lib/inbox/prescription';
 import {
@@ -87,27 +96,12 @@ export type UnifiedInboxPageProps = {
   onForwardToAiImageCheck?: (attachment: Attachment) => void;
 };
 
-const GROUP_TABS: readonly InboxFilterTab[] = [
-  'Personal',
-  'Family',
-  'Others',
-  'All',
-  'Promotion',
-] as const;
-
-const GROUP_TAB_DOTS: Partial<Record<InboxFilterTab, string>> = {
+const GROUP_TAB_DOTS: Partial<Record<string, string>> = {
   Personal: 'bg-teal-500',
   Family: 'bg-violet-500',
   Others: 'bg-amber-500',
   Promotion: 'bg-slate-400',
 };
-
-const GROUP_CHIP_ITEMS: ReadonlyArray<FilterChipItem<InboxFilterTab>> =
-  GROUP_TABS.map((tab) => ({
-    id: tab,
-    label: tab,
-    ...(GROUP_TAB_DOTS[tab] ? { dot: GROUP_TAB_DOTS[tab] } : {}),
-  }));
 
 const APPLE_SHORTCUT_STEPS = [
   {
@@ -444,6 +438,10 @@ export function UnifiedInboxPage({
     initialEvents ?? []
   );
   const [activeTab, setActiveTab] = React.useState<InboxFilterTab>('All');
+  const [newCategoryName, setNewCategoryName] = React.useState<string>('');
+  const [categoryError, setCategoryError] = React.useState<string | undefined>(
+    undefined
+  );
   const [showManualForm, setShowManualForm] = React.useState<boolean>(false);
   const [pasteSource, setPasteSource] = React.useState<Channel>('smsPaste');
   const [pasteSender, setPasteSender] = React.useState<string>('');
@@ -779,17 +777,43 @@ export function UnifiedInboxPage({
     }
   };
 
+  const visibleCategories = React.useMemo(
+    () => getVisibleInboxCategories(settings),
+    [settings]
+  );
+
+  const effectiveActiveTab: InboxFilterTab = visibleCategories.includes(
+    activeTab
+  )
+    ? activeTab
+    : 'All';
+
+  const assignableCategories = React.useMemo(
+    () => visibleCategories.filter((cat) => cat !== 'All'),
+    [visibleCategories]
+  );
+
+  const categoryChipItems: ReadonlyArray<FilterChipItem<InboxFilterTab>> =
+    React.useMemo(
+      () =>
+        visibleCategories.map((tab) => ({
+          id: tab,
+          label: tab,
+          ...(tab === 'All'
+            ? {}
+            : { dot: GROUP_TAB_DOTS[tab] ?? 'bg-sky-500' }),
+        })),
+      [visibleCategories]
+    );
+
   const visibleItems = React.useMemo(() => {
     const dismissed = new Set(settings.dismissedItemIds ?? []);
     const active =
       dismissed.size > 0
         ? items.filter((item) => !dismissed.has(item.id))
         : items;
-    if (activeTab === 'Promotion') {
-      return filterPromotions(active);
-    }
-    return filterByTab(active, activeTab);
-  }, [items, activeTab, settings.dismissedItemIds]);
+    return filterByTab(active, effectiveActiveTab);
+  }, [items, effectiveActiveTab, settings.dismissedItemIds]);
 
   const ingestDraft = async (draft: InboxItemDraft): Promise<boolean> => {
     setActionError(undefined);
@@ -1036,6 +1060,135 @@ export function UnifiedInboxPage({
     }));
     setItems((prev) => prev.filter((existing) => existing.id !== item.id));
     setStatusMessage('Message dismissed and removed from this device.');
+  };
+
+  const mergeLatestVaultFlags = async (
+    nextSettings: Settings
+  ): Promise<Settings> => {
+    if (!resolvedVault || typeof resolvedVault.getSettings !== 'function') {
+      return nextSettings;
+    }
+    const latestRes = await resolvedVault.getSettings();
+    if (!latestRes.ok) {
+      return nextSettings;
+    }
+    const mergedDismissed = Array.from(
+      new Set([
+        ...(latestRes.value.dismissedItemIds ?? []),
+        ...(nextSettings.dismissedItemIds ?? []),
+      ])
+    );
+    return {
+      ...nextSettings,
+      ...(latestRes.value.shortcutSetupCompleted ||
+      nextSettings.shortcutSetupCompleted
+        ? { shortcutSetupCompleted: true }
+        : {}),
+      ...(mergedDismissed.length > 0
+        ? { dismissedItemIds: mergedDismissed }
+        : {}),
+    };
+  };
+
+  const handleAddCategory = async (event: React.FormEvent) => {
+    event.preventDefault();
+    setCategoryError(undefined);
+    setActionError(undefined);
+
+    const added = addInboxCategory(settings, newCategoryName);
+    if (!added.ok) {
+      setCategoryError(added.errorMessage);
+      setStatusMessage(added.errorMessage);
+      return;
+    }
+
+    const nextSettings = await mergeLatestVaultFlags(added.settings);
+    if (resolvedVault) {
+      const saveRes = await resolvedVault.saveSettings(nextSettings);
+      if (!saveRes.ok) {
+        setCategoryError(saveRes.error.message);
+        setActionError(saveRes.error.message);
+        setStatusMessage(saveRes.error.message);
+        return;
+      }
+    }
+
+    setSettings(nextSettings);
+    setNewCategoryName('');
+    setStatusMessage(`Added category "${added.category}".`);
+  };
+
+  const handleDeleteCategory = async (categoryName: string) => {
+    setCategoryError(undefined);
+    setActionError(undefined);
+
+    const deleted = deleteInboxCategory(settings, categoryName);
+    if (!deleted.ok) {
+      setCategoryError(deleted.errorMessage);
+      setStatusMessage(deleted.errorMessage);
+      return;
+    }
+
+    const nextSettings = await mergeLatestVaultFlags(deleted.settings);
+    if (resolvedVault) {
+      const saveRes = await resolvedVault.saveSettings(nextSettings);
+      if (!saveRes.ok) {
+        setCategoryError(saveRes.error.message);
+        setActionError(saveRes.error.message);
+        setStatusMessage(saveRes.error.message);
+        return;
+      }
+    }
+
+    setSettings(nextSettings);
+    if (
+      effectiveActiveTab.trim().toLowerCase() ===
+      categoryName.trim().toLowerCase()
+    ) {
+      setActiveTab('All');
+    }
+    setStatusMessage(`Deleted category "${categoryName}".`);
+  };
+
+  const handleMoveItemCategory = async (
+    item: InboxItem,
+    nextCategory: string
+  ) => {
+    if (nextCategory === item.group) {
+      return;
+    }
+    setActionError(undefined);
+    const updatedItem: InboxItem = {
+      ...item,
+      group: nextCategory,
+    };
+
+    if (resolvedVault) {
+      let deletedOld = false;
+      if (typeof resolvedVault.deleteItem === 'function') {
+        const delRes = await resolvedVault.deleteItem(item.id);
+        if (!delRes.ok) {
+          setActionError(delRes.error.message);
+          setStatusMessage(delRes.error.message);
+          return;
+        }
+        deletedOld = true;
+      }
+      const putRes = await resolvedVault.putItem(updatedItem);
+      if (!putRes.ok) {
+        if (deletedOld) {
+          await resolvedVault.putItem(item);
+        }
+        setActionError(putRes.error.message);
+        setStatusMessage(putRes.error.message);
+        return;
+      }
+    }
+
+    setItems((prev) =>
+      prev.map((existing) => (existing.id === item.id ? updatedItem : existing))
+    );
+    setStatusMessage(`Moved message to ${nextCategory}.`);
   };
 
   const handleCompleteShortcutSetup = async () => {
@@ -1456,52 +1609,197 @@ export function UnifiedInboxPage({
         </section>
       ) : null}
 
-      {/* Sticky Frosted Group Filter Bar */}
-      <nav
-        aria-label="Inbox groups"
-        className="sticky top-0 z-20 -mx-5 bg-canvas/95 px-5 py-3 backdrop-blur-md max-w-none"
-      >
-        <FilterChips
-          items={GROUP_CHIP_ITEMS}
-          value={activeTab}
-          onChange={setActiveTab}
-        />
-      </nav>
-
-      {/* Inbox List */}
-      <section aria-labelledby="inbox-list-heading" className="space-y-4">
-        <h2
-          id="inbox-list-heading"
-          className="text-[22px] font-bold tracking-tight text-ink tnum"
+      {/* Category Filter Bar & Category Management (Cleanly Above Mail Scroll Layer) */}
+      <div className="space-y-3">
+        <nav
+          aria-label="Inbox groups"
+          className="-mx-5 border-y border-line bg-canvas px-5 py-3 max-w-none"
         >
-          {activeTab} Messages ({visibleItems.length})
-        </h2>
-
-        {visibleItems.length === 0 ? (
-          <EmptyState
-            icon={<Inbox size={24} />}
-            title={`No messages in ${activeTab} yet.`}
-            message="Messages and prescription photos you add will appear here with clear summaries."
+          <FilterChips
+            items={categoryChipItems}
+            value={effectiveActiveTab}
+            onChange={(tab) => setActiveTab(tab)}
           />
-        ) : (
-          <div className="space-y-4">
-            {visibleItems.map((item) => {
-              const actions = availableForwardActions(item, item.detectedEvent);
-              const showOriginal = expandedOriginalIds.has(item.id);
-              const isPhotoItem =
-                item.source === 'photos' && item.attachments.length > 0;
-              const isLowConfidenceRx = isPhotoItem && item.tier === 3;
+        </nav>
 
-              return (
-                <article
-                  key={item.id}
-                  data-card="true"
-                  className="rounded-card border border-line bg-white p-5 shadow-card anim-fade-up space-y-4"
+        <details className="rounded-card border border-line bg-white shadow-card">
+          <summary className="pressable flex min-h-[56px] cursor-pointer list-none items-center justify-between gap-2 px-4 py-3 text-[18px] font-bold text-ink">
+            <span className="inline-flex items-center gap-2">
+              <span
+                aria-hidden="true"
+                className="inline-flex shrink-0 text-brand"
+              >
+                <FolderPlus size={20} />
+              </span>
+              <span>Manage Categories</span>
+            </span>
+            <span className="text-[15px] font-semibold text-brand-deep">
+              Add or Delete
+            </span>
+          </summary>
+
+          <div className="space-y-4 border-t border-line px-4 py-4">
+            <form
+              aria-label="Add inbox category"
+              onSubmit={(e) => void handleAddCategory(e)}
+              className="space-y-3"
+            >
+              <label
+                htmlFor="new-inbox-category-input"
+                className="block text-[18px] font-semibold text-ink"
+              >
+                New category name
+              </label>
+              <div className="flex flex-wrap gap-3">
+                <input
+                  id="new-inbox-category-input"
+                  type="text"
+                  maxLength={24}
+                  value={newCategoryName}
+                  onChange={(e) => {
+                    setNewCategoryName(e.target.value);
+                    if (categoryError) setCategoryError(undefined);
+                  }}
+                  placeholder="For example: Bills or Health"
+                  className="min-h-[56px] min-w-[200px] flex-1 rounded-chip border-2 border-line bg-canvas px-4 text-[18px] text-ink focus:border-brand"
+                />
+                <SeniorButton
+                  type="submit"
+                  variant="primary"
+                  icon={<Plus size={20} />}
                 >
-                  <div className="flex flex-wrap items-center gap-3">
-                    <SourceBadge source={item.source} />
-                    <PriorityPill priority={item.priority} />
-                  </div>
+                  Add Category
+                </SeniorButton>
+              </div>
+              {categoryError ? (
+                <p
+                  role="alert"
+                  className="rounded-chip border-2 border-[#BE123C] bg-red-50 px-3.5 py-2.5 text-[16px] font-semibold text-[#881337]"
+                >
+                  {categoryError}
+                </p>
+              ) : null}
+            </form>
+
+            <div className="space-y-2 border-t border-line/70 pt-3">
+              <p className="text-[16px] font-semibold text-muted">
+                Your categories (Personal and All are always kept):
+              </p>
+              <ul className="space-y-2">
+                {visibleCategories.map((category) => {
+                  const isProtected = isProtectedInboxCategory(category);
+                  return (
+                    <li
+                      key={category}
+                      className="flex flex-wrap items-center justify-between gap-2 rounded-chip border border-line bg-canvas px-3.5 py-2"
+                    >
+                      <span className="text-[18px] font-semibold text-ink">
+                        {category}
+                      </span>
+                      {isProtected ? (
+                        <span
+                          data-badge="true"
+                          className="inline-flex items-center gap-1.5 rounded-full border-2 border-brand-soft bg-brand-wash px-3 py-1 text-[15px] font-semibold text-brand-deep"
+                        >
+                          <span
+                            aria-hidden="true"
+                            className="inline-flex shrink-0"
+                          >
+                            <Lock size={14} />
+                          </span>
+                          <span>Always Kept</span>
+                        </span>
+                      ) : (
+                        <SeniorButton
+                          variant="secondary"
+                          icon={<Trash2 size={18} />}
+                          aria-label={`Delete ${category}`}
+                          onClick={() => void handleDeleteCategory(category)}
+                        >
+                          {`Delete ${category}`}
+                        </SeniorButton>
+                      )}
+                    </li>
+                  );
+                })}
+              </ul>
+            </div>
+          </div>
+        </details>
+      </div>
+
+      {/* Dedicated Scrollable Mail Layer (Zero navigation/section controls inside) */}
+      <div
+        data-mail-scroll-layer="true"
+        role="region"
+        aria-label={`${effectiveActiveTab} mail list`}
+        className="max-h-[60vh] min-h-[280px] overflow-y-auto overscroll-contain rounded-card border border-line bg-canvas/60 p-3"
+      >
+        <section aria-labelledby="inbox-list-heading" className="space-y-4">
+          <h2
+            id="inbox-list-heading"
+            className="text-[22px] font-bold tracking-tight text-ink tnum"
+          >
+            {effectiveActiveTab} Messages ({visibleItems.length})
+          </h2>
+
+          {visibleItems.length === 0 ? (
+            <EmptyState
+              icon={<Inbox size={24} />}
+              title={`No messages in ${effectiveActiveTab} yet.`}
+              message="Messages and prescription photos you add will appear here with clear summaries."
+            />
+          ) : (
+            <div className="space-y-4">
+              {visibleItems.map((item) => {
+                const actions = availableForwardActions(
+                  item,
+                  item.detectedEvent
+                );
+                const showOriginal = expandedOriginalIds.has(item.id);
+                const isPhotoItem =
+                  item.source === 'photos' && item.attachments.length > 0;
+                const isLowConfidenceRx = isPhotoItem && item.tier === 3;
+                const cardCategoryOptions = assignableCategories.includes(
+                  item.group
+                )
+                  ? assignableCategories
+                  : [...assignableCategories, item.group];
+
+                return (
+                  <article
+                    key={item.id}
+                    data-card="true"
+                    className="rounded-card border border-line bg-white p-5 shadow-card anim-fade-up space-y-4"
+                  >
+                    <div className="flex flex-wrap items-center gap-3">
+                      <SourceBadge source={item.source} />
+                      <PriorityPill priority={item.priority} />
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-3">
+                      <label
+                        htmlFor={`inbox-move-category-${item.id}`}
+                        className="text-[16px] font-semibold text-muted"
+                      >
+                        Category:
+                      </label>
+                      <select
+                        id={`inbox-move-category-${item.id}`}
+                        aria-label="Move message to category"
+                        value={item.group}
+                        onChange={(e) =>
+                          void handleMoveItemCategory(item, e.target.value)
+                        }
+                        className="min-h-[56px] rounded-chip border-2 border-line bg-canvas px-4 text-[16px] font-semibold text-ink focus:border-brand"
+                      >
+                        {cardCategoryOptions.map((cat) => (
+                          <option key={cat} value={cat}>
+                            {cat}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
 
                   {/* Prescription original photo preview above extracted text */}
                   {isPhotoItem ? (
@@ -1792,11 +2090,12 @@ export function UnifiedInboxPage({
                     </div>
                   ) : null}
                 </article>
-              );
-            })}
-          </div>
-        )}
-      </section>
+                );
+              })}
+            </div>
+          )}
+        </section>
+      </div>
 
       {/* Apple Shortcut Setup Wizard */}
       {!settings.shortcutSetupCompleted ? (
