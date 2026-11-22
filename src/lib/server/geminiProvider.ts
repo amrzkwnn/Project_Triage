@@ -73,64 +73,105 @@ export function didGeminiPlannerFail(result: unknown): boolean {
   );
 }
 
-const GEMINI_RESPONSE_SCHEMA = {
-  type: 'OBJECT',
-  properties: {
-    summary: {
-      type: 'OBJECT',
-      properties: {
-        fromApp: { type: 'STRING' },
-        whoSent: { type: 'STRING' },
-        actionNeeded: { type: 'STRING' },
-        text: { type: 'STRING' },
-      },
-      required: ['fromApp', 'whoSent', 'actionNeeded', 'text'],
-    },
-    group: {
-      type: 'STRING',
-      enum: ['Personal', 'Family', 'Others'],
-    },
-    priority: {
-      type: 'STRING',
-      enum: ['Important', 'Social', 'Promotion'],
-    },
-    confidence: {
-      type: 'NUMBER',
-    },
-    scamWarning: {
-      type: 'OBJECT',
-      properties: {
-        value: {
-          type: 'STRING',
-          enum: ['safe', 'caution', 'danger'],
+const DEFAULT_ALLOWED_INBOX_CATEGORIES = ['Personal', 'Family', 'Others'] as const;
+
+function sanitizeAllowedCategories(
+  allowedCategories?: readonly string[]
+): string[] {
+  if (!Array.isArray(allowedCategories) || allowedCategories.length === 0) {
+    return [...DEFAULT_ALLOWED_INBOX_CATEGORIES];
+  }
+  const seen = new Set<string>();
+  const cleaned: string[] = [];
+  for (const raw of allowedCategories) {
+    if (typeof raw !== 'string') continue;
+    const trimmed = raw.trim().replace(/\s+/g, ' ');
+    const lower = trimmed.toLowerCase();
+    if (
+      trimmed.length === 0 ||
+      lower === 'all' ||
+      lower === 'promotion' ||
+      seen.has(lower)
+    ) {
+      continue;
+    }
+    seen.add(lower);
+    cleaned.push(trimmed);
+    if (cleaned.length >= 20) break;
+  }
+  return cleaned.length > 0 ? cleaned : [...DEFAULT_ALLOWED_INBOX_CATEGORIES];
+}
+
+function buildGeminiResponseSchema(allowedCategories?: readonly string[]) {
+  const groupEnum = sanitizeAllowedCategories(allowedCategories);
+  return {
+    type: 'OBJECT',
+    properties: {
+      summary: {
+        type: 'OBJECT',
+        properties: {
+          fromApp: { type: 'STRING' },
+          whoSent: { type: 'STRING' },
+          actionNeeded: { type: 'STRING' },
+          text: { type: 'STRING' },
         },
-        flags: {
-          type: 'ARRAY',
-          items: {
+        required: ['fromApp', 'whoSent', 'actionNeeded', 'text'],
+      },
+      group: {
+        type: 'STRING',
+        enum: groupEnum,
+      },
+      priority: {
+        type: 'STRING',
+        enum: ['Important', 'Social', 'Promotion'],
+      },
+      confidence: {
+        type: 'NUMBER',
+      },
+      scamWarning: {
+        type: 'OBJECT',
+        properties: {
+          value: {
             type: 'STRING',
-            enum: ['urgency', 'secrecy', 'payment', 'domain-mismatch'],
+            enum: ['safe', 'caution', 'danger'],
+          },
+          flags: {
+            type: 'ARRAY',
+            items: {
+              type: 'STRING',
+              enum: ['urgency', 'secrecy', 'payment', 'domain-mismatch'],
+            },
+          },
+          reasons: {
+            type: 'ARRAY',
+            items: { type: 'STRING' },
           },
         },
-        reasons: {
-          type: 'ARRAY',
-          items: { type: 'STRING' },
+        required: ['value', 'flags', 'reasons'],
+      },
+      detectedEvent: {
+        type: 'OBJECT',
+        properties: {
+          date: { type: 'STRING' },
+          time: { type: 'STRING' },
+          title: { type: 'STRING' },
+          location: { type: 'STRING' },
+          category: {
+            type: 'STRING',
+            enum: [
+              'Medical',
+              'Family & Social',
+              'Bills & Errands',
+              'Daily Routine',
+            ],
+          },
         },
+        required: ['date', 'time', 'title'],
       },
-      required: ['value', 'flags', 'reasons'],
     },
-    detectedEvent: {
-      type: 'OBJECT',
-      properties: {
-        date: { type: 'STRING' },
-        time: { type: 'STRING' },
-        title: { type: 'STRING' },
-        location: { type: 'STRING' },
-      },
-      required: ['date', 'time', 'title'],
-    },
-  },
-  required: ['summary', 'group', 'priority', 'confidence'],
-} as const;
+    required: ['summary', 'group', 'priority', 'confidence'],
+  };
+}
 
 const GEMINI_SCAM_RESPONSE_SCHEMA = {
   type: 'OBJECT',
@@ -250,8 +291,13 @@ function getTodayIsoDate(): string {
   return new Date().toISOString().slice(0, 10);
 }
 
-function buildGeminiPrompt(item: { channel: Channel; text: string }): string {
+function buildGeminiPrompt(
+  item: { channel: Channel; text: string },
+  allowedCategories?: readonly string[]
+): string {
   const todayIso = getTodayIsoDate();
+  const categories = sanitizeAllowedCategories(allowedCategories);
+  const categoryListText = categories.map((c) => `"${c}"`).join(', ');
   return [
     'You are a calm, helpful companion summarizing an incoming message for an older adult.',
     `Today's date is ${todayIso}.`,
@@ -262,11 +308,11 @@ function buildGeminiPrompt(item: { channel: Channel; text: string }): string {
     '- summary.whoSent: plain-language name or description of who sent the message.',
     '- summary.actionNeeded: short, clear next step, or "No action needed".',
     '- summary.text: concise 1 to 2 sentence plain-language summary (under 300 characters).',
-    '- group: one of "Personal", "Family", or "Others".',
-    '- priority: one of "Important", "Social", or "Promotion".',
+    `- group: choose the single best matching category from [${categoryListText}]. Use "Personal" for medical/clinic appointments or private personal matters, "Family" (if listed) for messages from or about family members, dinners, birthdays, or relatives, any matching custom user category (such as "Bills", "Travel", or similar) whenever the topic clearly fits it, and "Others" (if listed) for general notices or promotions.`,
+    '- priority: accurately choose one of "Important" (appointments, bills due, urgent family help, security alerts, scams, or timely actions), "Social" (casual chats, friendly invitations, family dinners/lunches, photos, or warm check-ins), or "Promotion" (sales, discounts, coupons, store offers, ads, or marketing newsletters).',
     '- confidence: number between 0 and 1.',
     '- scamWarning (optional): include when the message shows any scam, phishing, impersonation, urgency, secrecy, or suspicious payment trick, with value ("safe", "caution", or "danger"), flags, and 1 to 3 short plain-language reasons.',
-    '- detectedEvent (optional): include only when the message mentions a real appointment, visit, or event with a date and time. Convert relative dates like "tomorrow" or "next Tuesday" using today\'s date into YYYY-MM-DD and 24-hour HH:MM.',
+    '- detectedEvent (optional): include only when the message mentions a real appointment, visit, meal, or event with a date and time. Convert relative dates like "tomorrow" or "next Tuesday" using today\'s date into YYYY-MM-DD and 24-hour HH:MM. Always set detectedEvent.category accurately: dinner, lunch, breakfast, birthday, coffee, tea, family visits, parties, and gatherings MUST be "Family & Social" (NEVER classify dinner or social meals as "Medical"); doctor, clinic, hospital, dentist, lab test, checkup, and medicine MUST be "Medical"; bills due, rent, utilities, bank visits, groceries, and errands MUST be "Bills & Errands"; walks, exercise, hobbies, and everyday schedule items MUST be "Daily Routine".',
     '',
     `Channel: ${item.channel}`,
     'Message:',
@@ -406,7 +452,7 @@ function buildGeminiCalendarPlanPrompt(params: {
     '- date: exact calendar date in YYYY-MM-DD format.',
     '- time (optional): 24-hour HH:MM time if mentioned; omit if all-day or no time was given.',
     '- location (optional): clinic, room, or place name if mentioned; omit otherwise.',
-    '- category: one of "Medical", "Family & Social", "Bills & Errands", or "Daily Routine".',
+    '- category: one of "Medical", "Family & Social", "Bills & Errands", or "Daily Routine". Follow strict rules: dinner, lunch, breakfast, birthday, coffee, tea, family visits, parties, and social gatherings MUST be "Family & Social" (NEVER classify dinner or social meals as "Medical"); doctor, clinic, hospital, dentist, checkup, and medicine MUST be "Medical"; bills due, rent, utilities, bank visits, groceries, and errands MUST be "Bills & Errands"; walks, exercise, and everyday habits MUST be "Daily Routine".',
     '- confidence: number between 0 and 1 (use below 0.6 if the date was uncertain or unclear).',
     'If no real calendar events are mentioned, return {"candidates": []}.',
     '',
@@ -457,7 +503,7 @@ export function createGeminiAiProvider(deps?: {
 }): DecideAiProvider {
   const timeoutMs = deps?.timeoutMs ?? DEFAULT_GEMINI_TIMEOUT_MS;
 
-  const provider: DecideAiProvider = async (item, apiKey) => {
+  const provider: DecideAiProvider = async (item, apiKey, options) => {
     const fetchFn = deps?.fetchFn ?? globalThis.fetch;
     if (typeof fetchFn !== 'function' || !apiKey) {
       return {} as DecideOutput;
@@ -483,12 +529,16 @@ export function createGeminiAiProvider(deps?: {
           contents: [
             {
               role: 'user',
-              parts: [{ text: buildGeminiPrompt(item) }],
+              parts: [
+                { text: buildGeminiPrompt(item, options?.allowedCategories) },
+              ],
             },
           ],
           generationConfig: {
             responseMimeType: 'application/json',
-            responseSchema: GEMINI_RESPONSE_SCHEMA,
+            responseSchema: buildGeminiResponseSchema(
+              options?.allowedCategories
+            ),
           },
         }),
         signal: controller.signal,

@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React from 'react';
 import { Temporal } from 'temporal-polyfill';
 import {
   AlertTriangle,
@@ -34,6 +34,7 @@ import { autoPlanCalendarFromItems } from '@/lib/calendar/aiPlanClient';
 import {
   CALENDAR_CATEGORIES,
   getCategoryMeta,
+  inferCalendarCategory,
 } from '@/lib/calendar/categories';
 import { parsePlainDate, parsePlainTime } from '@/lib/calendar/dates';
 import {
@@ -147,12 +148,82 @@ export async function applyCandidateDecisionWithPersistence(params: {
   };
 }
 
+export async function autoPickCalendarCategory(params: {
+  title: string;
+  location?: string;
+  date: string;
+  time?: string;
+  todayIso: string;
+  settings: Settings;
+  vault?: Pick<Vault, 'appendAudit'>;
+  fetchFn?: typeof fetch;
+}): Promise<
+  | {
+      ok: true;
+      category: CalendarCategory;
+      checkedBy: 'ai' | 'device';
+      message: string;
+    }
+  | { ok: false; message: string }
+> {
+  const trimmedTitle = params.title.trim();
+  if (trimmedTitle.length === 0) {
+    return {
+      ok: false,
+      message:
+        'Please enter an event name first so we can suggest the best category.',
+    };
+  }
+
+  const combinedText = `${trimmedTitle}${params.location?.trim() ? ` ${params.location.trim()}` : ''}`;
+  const fallbackCategory = inferCalendarCategory(combinedText);
+
+  if (!params.settings.allowAiReading) {
+    return {
+      ok: true,
+      category: fallbackCategory,
+      checkedBy: 'device',
+      message: `Suggested "${fallbackCategory}" on this device for "${trimmedTitle}".`,
+    };
+  }
+
+  const timePart = params.time?.trim() ? params.time.trim() : '12:00';
+  const promptLine = `${params.date} ${timePart} ${trimmedTitle}${params.location?.trim() ? ` at ${params.location.trim()}` : ''}`;
+  const planRes = await autoPlanCalendarFromItems({
+    items: [{ text: promptLine }],
+    existingEvents: [],
+    todayIso: params.todayIso,
+    settings: params.settings,
+    vault: params.vault,
+    fetchFn: params.fetchFn,
+  });
+
+  if (!planRes.ok) {
+    return {
+      ok: false,
+      message: planRes.message,
+    };
+  }
+
+  const suggested = planRes.candidates[0]?.category ?? fallbackCategory;
+  return {
+    ok: true,
+    category: suggested,
+    checkedBy: planRes.checkedBy,
+    message:
+      planRes.checkedBy === 'ai'
+        ? `AI Helper suggested "${suggested}" for "${trimmedTitle}".`
+        : `Suggested "${suggested}" on this device for "${trimmedTitle}".`,
+  };
+}
+
 export type CalendarPageProps = {
   initialSettings?: Settings;
   initialEvents?: CalendarEvent[];
   initialInboxItems?: InboxItem[];
   initialToday?: string;
   initialView?: CalendarViewMode;
+  initialFormOpen?: boolean;
   initialSnapCandidates?: Candidate[];
   initialPlanSource?: 'ai' | 'device';
   initialQueueError?: string;
@@ -168,6 +239,7 @@ export function CalendarPage({
   initialInboxItems,
   initialToday,
   initialView = 'Today',
+  initialFormOpen = false,
   initialSnapCandidates = [],
   initialPlanSource,
   initialQueueError,
@@ -176,7 +248,7 @@ export function CalendarPage({
   vault,
   onNavigate,
 }: CalendarPageProps) {
-  const todayDate = useMemo(() => {
+  const todayDate = React.useMemo(() => {
     if (initialToday) {
       const parsed = parsePlainDate(initialToday);
       if (parsed.ok) return parsed.value;
@@ -184,75 +256,87 @@ export function CalendarPage({
     return Temporal.Now.plainDateISO();
   }, [initialToday]);
 
-  const [settings, setSettings] = useState<Settings>(
+  const [settings, setSettings] = React.useState<Settings>(
     initialSettings ?? createDefaultSettings()
   );
-  const [events, setEvents] = useState<CalendarEvent[]>(initialEvents ?? []);
-  const [inboxItems, setInboxItems] = useState<InboxItem[]>(
+  const [events, setEvents] = React.useState<CalendarEvent[]>(
+    initialEvents ?? []
+  );
+  const [inboxItems, setInboxItems] = React.useState<InboxItem[]>(
     initialInboxItems ?? []
   );
-  const [viewMode, setViewMode] = useState<CalendarViewMode>(initialView);
-  const [selectedIsoDate, setSelectedIsoDate] = useState<string>(() =>
+  const [viewMode, setViewMode] = React.useState<CalendarViewMode>(initialView);
+  const [selectedIsoDate, setSelectedIsoDate] = React.useState<string>(() =>
     todayDate.toString()
   );
 
   // Automatic Plan from Messages & Emails state
-  const [isAutoPlanning, setIsAutoPlanning] = useState<boolean>(false);
-  const [autoPlanSource, setAutoPlanSource] = useState<
+  const [isAutoPlanning, setIsAutoPlanning] = React.useState<boolean>(false);
+  const [autoPlanSource, setAutoPlanSource] = React.useState<
     'ai' | 'device' | undefined
   >(initialPlanSource);
-  const [autoPlanMessage, setAutoPlanMessage] = useState<string | undefined>(
-    undefined
-  );
-  const [autoPlanError, setAutoPlanError] = useState<string | undefined>(
+  const [autoPlanMessage, setAutoPlanMessage] = React.useState<
+    string | undefined
+  >(undefined);
+  const [autoPlanError, setAutoPlanError] = React.useState<string | undefined>(
     undefined
   );
 
-  const selectedDate = useMemo(() => {
+  const selectedDate = React.useMemo(() => {
     const parsed = parsePlainDate(selectedIsoDate);
     return parsed.ok ? parsed.value : todayDate;
   }, [selectedIsoDate, todayDate]);
 
   // Add / Edit / Delete confirmation state
-  const [formOpen, setFormOpen] = useState<boolean>(false);
-  const [editingId, setEditingId] = useState<string | undefined>(undefined);
-  const [formTitle, setFormTitle] = useState<string>('');
-  const [formDate, setFormDate] = useState<string>(todayDate.toString());
-  const [formTime, setFormTime] = useState<string>('09:00');
-  const [formLocation, setFormLocation] = useState<string>('');
+  const [formOpen, setFormOpen] = React.useState<boolean>(initialFormOpen);
+  const [editingId, setEditingId] = React.useState<string | undefined>(
+    undefined
+  );
+  const [formTitle, setFormTitle] = React.useState<string>('');
+  const [formDate, setFormDate] = React.useState<string>(todayDate.toString());
+  const [formTime, setFormTime] = React.useState<string>('09:00');
+  const [formLocation, setFormLocation] = React.useState<string>('');
   const [formCategory, setFormCategory] =
-    useState<CalendarCategory>('Medical');
-  const [formError, setFormError] = useState<string | undefined>(undefined);
+    React.useState<CalendarCategory>('Daily Routine');
+  const [categoryManuallyPicked, setCategoryManuallyPicked] =
+    React.useState<boolean>(false);
+  const [isPickingCategory, setIsPickingCategory] =
+    React.useState<boolean>(false);
+  const [formError, setFormError] = React.useState<string | undefined>(
+    undefined
+  );
   const [awaitingSaveConfirm, setAwaitingSaveConfirm] =
-    useState<boolean>(false);
-  const [pendingDeleteEvent, setPendingDeleteEvent] = useState<
+    React.useState<boolean>(false);
+  const [pendingDeleteEvent, setPendingDeleteEvent] = React.useState<
     CalendarEvent | undefined
   >(undefined);
 
   // Paper Calendar Snap 1-by-1 candidate review state
-  const [snapPhotoName, setSnapPhotoName] = useState<string | undefined>(
+  const [snapPhotoName, setSnapPhotoName] = React.useState<string | undefined>(
     undefined
   );
-  const [snapInputText, setSnapInputText] = useState<string>('');
-  const [snapError, setSnapError] = useState<string | undefined>(undefined);
-  const [queueError, setQueueError] = useState<string | undefined>(
+  const [snapInputText, setSnapInputText] = React.useState<string>('');
+  const [snapError, setSnapError] = React.useState<string | undefined>(
+    undefined
+  );
+  const [queueError, setQueueError] = React.useState<string | undefined>(
     initialQueueError
   );
-  const [snapQueue, setSnapQueue] = useState<Candidate[]>(
+  const [snapQueue, setSnapQueue] = React.useState<Candidate[]>(
     initialSnapCandidates
   );
-  const [confirmDateInput, setConfirmDateInput] = useState<string>(
+  const [confirmDateInput, setConfirmDateInput] = React.useState<string>(
     initialSnapCandidates[0]?.date ?? ''
   );
 
-  const [statusMessage, setStatusMessage] = useState<string>('');
+  const [statusMessage, setStatusMessage] = React.useState<string>('');
 
-  const resolvedVault = useMemo(
+  const resolvedVault = React.useMemo(
     () => vault ?? (typeof window !== 'undefined' ? createVault() : undefined),
     [vault]
   );
 
-  const loadData = useCallback(async () => {
+  const loadData = React.useCallback(async () => {
     if (!resolvedVault) return;
     const [settingsRes, eventsRes, itemsRes] = await Promise.all([
       resolvedVault.getSettings(),
@@ -270,7 +354,7 @@ export function CalendarPage({
     }
   }, [resolvedVault]);
 
-  useEffect(() => {
+  React.useEffect(() => {
     if (
       initialSettings === undefined ||
       initialEvents === undefined ||
@@ -289,15 +373,15 @@ export function CalendarPage({
     }
   };
 
-  const todayEvents = useMemo(
+  const todayEvents = React.useMemo(
     () => viewToday(events, selectedDate),
     [events, selectedDate]
   );
-  const weekGroups = useMemo(
+  const weekGroups = React.useMemo(
     () => viewWeek(events, selectedDate),
     [events, selectedDate]
   );
-  const monthGroups = useMemo(
+  const monthGroups = React.useMemo(
     () =>
       viewMonth(
         events,
@@ -320,7 +404,8 @@ export function CalendarPage({
     setFormDate(selectedDate.toString());
     setFormTime('09:00');
     setFormLocation('');
-    setFormCategory('Medical');
+    setFormCategory('Daily Routine');
+    setCategoryManuallyPicked(false);
     setFormError(undefined);
     setAwaitingSaveConfirm(false);
     setFormOpen(true);
@@ -333,9 +418,65 @@ export function CalendarPage({
     setFormTime(ev.time ?? '');
     setFormLocation(ev.location ?? '');
     setFormCategory(ev.category);
+    setCategoryManuallyPicked(true);
     setFormError(undefined);
     setAwaitingSaveConfirm(false);
     setFormOpen(true);
+  };
+
+  const handleTurnOnAiScanning = async () => {
+    let baseSettings = settings;
+    if (resolvedVault) {
+      const latestRes = await resolvedVault.getSettings();
+      if (latestRes.ok) {
+        baseSettings = latestRes.value;
+      }
+    }
+    const nextSettings: Settings = {
+      ...baseSettings,
+      allowAiReading: true,
+    };
+    if (resolvedVault) {
+      const saveRes = await resolvedVault.saveSettings(nextSettings);
+      if (!saveRes.ok) {
+        setAutoPlanError(saveRes.error.message);
+        setStatusMessage(saveRes.error.message);
+        return;
+      }
+    }
+    setSettings(nextSettings);
+    setAutoPlanError(undefined);
+    setFormError(undefined);
+    setStatusMessage(
+      'AI scanning is now ON. You can auto-plan your calendar or auto-pick event categories with AI Helper.'
+    );
+  };
+
+  const handleAutoPickCategory = async () => {
+    setFormError(undefined);
+    setIsPickingCategory(true);
+    try {
+      const pickRes = await autoPickCalendarCategory({
+        title: formTitle,
+        location: formLocation,
+        date: formDate,
+        time: formTime,
+        todayIso: todayDate.toString(),
+        settings,
+        vault: resolvedVault,
+        fetchFn,
+      });
+      if (!pickRes.ok) {
+        setFormError(pickRes.message);
+        setStatusMessage(pickRes.message);
+        return;
+      }
+      setFormCategory(pickRes.category);
+      setCategoryManuallyPicked(true);
+      setStatusMessage(pickRes.message);
+    } finally {
+      setIsPickingCategory(false);
+    }
   };
 
   const handleRequestSaveConfirm = (event: React.FormEvent) => {
@@ -500,7 +641,7 @@ export function CalendarPage({
     );
   };
 
-  const detectedEventCount = useMemo(
+  const detectedEventCount = React.useMemo(
     () =>
       inboxItems.filter(
         (item) =>
@@ -903,7 +1044,15 @@ export function CalendarPage({
                 id="cal-title"
                 type="text"
                 value={formTitle}
-                onChange={(e) => setFormTitle(e.target.value)}
+                onChange={(e) => {
+                  const nextTitle = e.target.value;
+                  setFormTitle(nextTitle);
+                  if (!editingId && !categoryManuallyPicked) {
+                    setFormCategory(
+                      inferCalendarCategory(`${nextTitle} ${formLocation}`)
+                    );
+                  }
+                }}
                 className="min-h-[56px] w-full rounded-chip border-2 border-line bg-canvas px-4 text-[18px] text-ink focus:border-brand"
               />
             </div>
@@ -942,7 +1091,7 @@ export function CalendarPage({
               </div>
             </div>
 
-            <div className="space-y-1">
+            <div className="space-y-2">
               <label
                 htmlFor="cal-category"
                 className="block text-[18px] font-semibold text-ink"
@@ -952,9 +1101,10 @@ export function CalendarPage({
               <select
                 id="cal-category"
                 value={formCategory}
-                onChange={(e) =>
-                  setFormCategory(e.target.value as CalendarCategory)
-                }
+                onChange={(e) => {
+                  setCategoryManuallyPicked(true);
+                  setFormCategory(e.target.value as CalendarCategory);
+                }}
                 className="min-h-[56px] w-full rounded-chip border-2 border-line bg-canvas px-4 text-[18px] text-ink focus:border-brand"
               >
                 {CALENDAR_CATEGORIES.map((cat) => (
@@ -963,6 +1113,34 @@ export function CalendarPage({
                   </option>
                 ))}
               </select>
+              <div className="flex flex-wrap gap-3 pt-1">
+                <SeniorButton
+                  variant="secondary"
+                  icon={<Sparkles size={20} />}
+                  disabled={isPickingCategory}
+                  onClick={() => void handleAutoPickCategory()}
+                >
+                  {isPickingCategory
+                    ? 'Picking Category...'
+                    : 'Auto-Pick Category with AI'}
+                </SeniorButton>
+                {!settings.allowAiReading ? (
+                  <SeniorButton
+                    variant="secondary"
+                    icon={<Sparkles size={20} />}
+                    onClick={() => void handleTurnOnAiScanning()}
+                  >
+                    Turn On AI Scanning
+                  </SeniorButton>
+                ) : null}
+              </div>
+              {!settings.allowAiReading ? (
+                <p className="text-[15px] leading-relaxed text-muted">
+                  AI scanning is OFF, so categories are picked using built-in
+                  on-device matching. Turn On AI Scanning to let AI Helper pick
+                  categories for tricky event names.
+                </p>
+              ) : null}
             </div>
 
             <div className="space-y-1">
@@ -976,7 +1154,15 @@ export function CalendarPage({
                 id="cal-location"
                 type="text"
                 value={formLocation}
-                onChange={(e) => setFormLocation(e.target.value)}
+                onChange={(e) => {
+                  const nextLocation = e.target.value;
+                  setFormLocation(nextLocation);
+                  if (!editingId && !categoryManuallyPicked) {
+                    setFormCategory(
+                      inferCalendarCategory(`${formTitle} ${nextLocation}`)
+                    );
+                  }
+                }}
                 className="min-h-[56px] w-full rounded-chip border-2 border-line bg-canvas px-4 text-[18px] text-ink focus:border-brand"
               />
             </div>
@@ -1191,11 +1377,21 @@ export function CalendarPage({
         </div>
 
         {!settings.allowAiReading ? (
-          <p className="rounded-chip border border-line bg-canvas p-4 text-[16px] leading-relaxed text-muted">
-            Built-in device scan is ready now. Turn Allow AI Reading ON in My
-            Data to understand natural dates like &ldquo;next Tuesday at
-            3pm&rdquo;.
-          </p>
+          <div className="rounded-chip border border-line bg-canvas p-4 space-y-3">
+            <p className="text-[16px] leading-relaxed text-muted">
+              Built-in device scan is ready now. Turn on AI scanning to
+              understand natural dates like &ldquo;next Tuesday at 3pm&rdquo;
+              and pick event categories automatically. Every check is recorded
+              in My Data, and you can turn it off anytime.
+            </p>
+            <SeniorButton
+              variant="secondary"
+              icon={<Sparkles size={20} />}
+              onClick={() => void handleTurnOnAiScanning()}
+            >
+              Turn On AI Scanning
+            </SeniorButton>
+          </div>
         ) : null}
 
         {autoPlanError ? (

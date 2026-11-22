@@ -1,3 +1,4 @@
+import { inferCalendarCategory } from '@/lib/calendar/categories';
 import { parsePlainDate, parsePlainTime } from '@/lib/calendar/dates';
 import type {
   DetectedEvent,
@@ -90,6 +91,7 @@ export function detectEvent(text: string): DetectedEvent | undefined {
     date: matchedDate,
     time: matchedTime,
     title: extractTitle(text),
+    category: inferCalendarCategory(text),
   };
 
   const location = extractLocation(text);

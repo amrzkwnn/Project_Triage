@@ -33,6 +33,7 @@ import {
   countEnabledChannels,
   selectHomeDecisions,
 } from '@/lib/home/decisions';
+import { inferCalendarCategory } from '@/lib/calendar/categories';
 import { syncEmailsFromRelay } from '@/lib/inbox/emailClient';
 import {
   dismissItemLocally,
@@ -116,7 +117,8 @@ export async function executeHomeDefaultConfirm(params: {
             date: ev.date,
             time: ev.time,
             ...(ev.location ? { location: ev.location } : {}),
-            category: 'Medical',
+            category:
+              ev.category ?? inferCalendarCategory(`${ev.title} ${item.text}`),
             sourceItemId: itemId,
             createdAt: new Date().toISOString(),
           };

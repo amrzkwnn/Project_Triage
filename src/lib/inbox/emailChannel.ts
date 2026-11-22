@@ -11,6 +11,7 @@ import type { Vault } from '@/lib/vault/schema';
 import { admit, mayCallAi } from '@/lib/vault/consent';
 import { parseIngest } from '@/lib/inbox/parse';
 import { isDuplicate } from '@/lib/inbox/dedup';
+import { inferCalendarCategory } from '@/lib/calendar/categories';
 import { analyze } from '@/lib/ai/engine';
 import { checkMediaWithAi } from '@/lib/media/aiMediaClient';
 
@@ -378,6 +379,17 @@ export async function processEmailBatch(params: {
       }
     }
 
+    const resolvedDetectedEvent = analysis.detectedEvent
+      ? {
+          ...analysis.detectedEvent,
+          category:
+            analysis.detectedEvent.category ??
+            inferCalendarCategory(
+              `${analysis.detectedEvent.title} ${draft.text}`
+            ),
+        }
+      : undefined;
+
     const item: InboxItem = {
       id: itemId,
       source: 'email',
@@ -388,8 +400,8 @@ export async function processEmailBatch(params: {
       group: analysis.group,
       priority: analysis.priority,
       summary: analysis.summary,
-      ...(analysis.detectedEvent
-        ? { detectedEvent: analysis.detectedEvent }
+      ...(resolvedDetectedEvent
+        ? { detectedEvent: resolvedDetectedEvent }
         : {}),
       ...(mergedScamWarning ? { scamWarning: mergedScamWarning } : {}),
       ...(mediaCheck ? { mediaCheck } : {}),

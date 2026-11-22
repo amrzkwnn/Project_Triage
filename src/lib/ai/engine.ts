@@ -1,4 +1,5 @@
 import type {
+  CalendarCategory,
   Channel,
   ClaritySummary,
   DecisionTier,
@@ -16,7 +17,9 @@ import type {
 import type { Vault } from '@/lib/vault/schema';
 import { CHANNEL_LABELS, mayCallAi } from '@/lib/vault/consent';
 import { buildAuditEntry } from '@/lib/vault/audit';
+import { CALENDAR_CATEGORIES } from '@/lib/calendar/categories';
 import { parsePlainDate, parsePlainTime } from '@/lib/calendar/dates';
+import { getVisibleInboxCategories } from '@/lib/inbox/categories';
 import type { ClassifyContext } from '@/lib/inbox/classify';
 import { analyzeWithRules, type Analysis } from '@/lib/ai/rules';
 import { assignTier } from '@/lib/ai/tiering';
@@ -28,6 +31,7 @@ import {
 export type { Analysis } from '@/lib/ai/rules';
 
 const VALID_GROUPS = new Set<GroupCategory>(['Personal', 'Family', 'Others']);
+const VALID_CALENDAR_CATEGORIES = new Set<CalendarCategory>(CALENDAR_CATEGORIES);
 const VALID_PRIORITIES = new Set<PriorityType>([
   'Important',
   'Social',
@@ -90,6 +94,12 @@ function sanitizeOptionalDetectedEvent(raw: unknown): DetectedEvent | undefined 
   if (isNonEmptyString(raw.location)) {
     event.location = raw.location.trim().slice(0, 100);
   }
+  if (
+    typeof raw.category === 'string' &&
+    VALID_CALENDAR_CATEGORIES.has(raw.category as CalendarCategory)
+  ) {
+    event.category = raw.category as CalendarCategory;
+  }
   return event;
 }
 
@@ -130,22 +140,46 @@ function sanitizeOptionalVerdict(raw: unknown): Verdict | undefined {
   };
 }
 
+function resolveAllowedGroup(
+  candidate: unknown,
+  allowedCategories?: readonly string[]
+): GroupCategory | null {
+  if (typeof candidate !== 'string') {
+    return null;
+  }
+  const trimmed = candidate.trim();
+  if (trimmed.length === 0) {
+    return null;
+  }
+  if (VALID_GROUPS.has(trimmed as GroupCategory)) {
+    return trimmed as GroupCategory;
+  }
+  const lower = trimmed.toLowerCase();
+  if (Array.isArray(allowedCategories)) {
+    for (const cat of allowedCategories) {
+      if (cat.toLowerCase() === lower) {
+        return cat as GroupCategory;
+      }
+    }
+  }
+  return null;
+}
+
 function mergeProxyResponse(
   baseline: Analysis,
   response: DecideProxyResponse,
-  itemId?: string
+  itemId?: string,
+  allowedCategories?: readonly string[]
 ): Analysis | null {
   const raw = response as Record<string, unknown>;
 
   let nextGroup = baseline.group;
   if (raw.group !== undefined) {
-    if (
-      typeof raw.group !== 'string' ||
-      !VALID_GROUPS.has(raw.group as GroupCategory)
-    ) {
+    const resolvedGroup = resolveAllowedGroup(raw.group, allowedCategories);
+    if (resolvedGroup === null) {
       return null;
     }
-    nextGroup = raw.group as GroupCategory;
+    nextGroup = resolvedGroup;
   }
 
   let nextPriority = baseline.priority;
@@ -375,9 +409,16 @@ export async function analyze(
   }
 
   // 4. Call /api/decide once (zero retries)
+  const allowedCategories = getVisibleInboxCategories(settings).filter(
+    (cat) => cat.toLowerCase() !== 'all' && cat.toLowerCase() !== 'promotion'
+  );
   const proxyRes = await callDecideProxy(
     { source: item.source, text: item.text },
-    { fetchFn: deps.fetchFn, timeoutMs: deps.timeoutMs }
+    {
+      fetchFn: deps.fetchFn,
+      timeoutMs: deps.timeoutMs,
+      allowedCategories,
+    }
   );
 
   if (!proxyRes.ok) {
@@ -392,7 +433,12 @@ export async function analyze(
     };
   }
 
-  const merged = mergeProxyResponse(rulesAnalysis, proxyRes.value, item.id);
+  const merged = mergeProxyResponse(
+    rulesAnalysis,
+    proxyRes.value,
+    item.id,
+    allowedCategories
+  );
   if (merged === null) {
     return {
       ok: true,

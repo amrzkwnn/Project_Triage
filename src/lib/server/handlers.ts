@@ -11,8 +11,10 @@ import {
   type VerdictValue,
 } from '@/lib/types';
 import { hasLoneSurrogate, parseIngest } from '@/lib/inbox/parse';
+import { MAX_INBOX_CATEGORY_LENGTH } from '@/lib/inbox/categories';
 import { classify } from '@/lib/inbox/classify';
 import { detectEvent } from '@/lib/inbox/events';
+import { inferCalendarCategory } from '@/lib/calendar/categories';
 import { parsePlainDate, parsePlainTime } from '@/lib/calendar/dates';
 import {
   extractCalendarCandidatesFromText,
@@ -108,7 +110,8 @@ export type DecideOutput = {
 
 export type DecideAiProvider = (
   item: { channel: Channel; text: string },
-  apiKey: string
+  apiKey: string,
+  options?: { allowedCategories?: readonly string[] }
 ) => Promise<DecideOutput>;
 
 export type ScamCheckProviderInput =
@@ -773,6 +776,12 @@ function sanitizeDetectedEvent(raw: unknown): DetectedEvent | undefined {
   if (typeof raw.location === 'string' && raw.location.trim().length > 0) {
     event.location = raw.location.trim().slice(0, 100);
   }
+  if (
+    typeof raw.category === 'string' &&
+    VALID_CALENDAR_CATEGORIES.has(raw.category as CalendarCategory)
+  ) {
+    event.category = raw.category as CalendarCategory;
+  }
   return event;
 }
 
@@ -876,13 +885,71 @@ function deterministicDecide(item: {
   return output;
 }
 
+const CONTROL_CHAR_PATTERN = /[\u0000-\u001F\u007F]/;
+
+function parseInboxCategoriesHeader(rawHeader: string | null): string[] {
+  if (!rawHeader || rawHeader.trim().length === 0) {
+    return [];
+  }
+  const seen = new Set<string>();
+  const categories: string[] = [];
+  for (const part of rawHeader.split(',')) {
+    const cleaned = part.trim().replace(/\s+/g, ' ');
+    if (
+      cleaned.length === 0 ||
+      cleaned.length > MAX_INBOX_CATEGORY_LENGTH ||
+      hasLoneSurrogate(cleaned) ||
+      CONTROL_CHAR_PATTERN.test(cleaned)
+    ) {
+      continue;
+    }
+    const lower = cleaned.toLowerCase();
+    if (lower === 'all' || lower === 'promotion' || seen.has(lower)) {
+      continue;
+    }
+    seen.add(lower);
+    categories.push(cleaned);
+    if (categories.length >= 20) break;
+  }
+  return categories;
+}
+
+function resolveDecideGroup(
+  candidateGroup: unknown,
+  fallbackGroup: GroupCategory,
+  allowedCategories?: readonly string[]
+): GroupCategory {
+  if (typeof candidateGroup !== 'string') {
+    return fallbackGroup;
+  }
+  const trimmed = candidateGroup.trim();
+  if (trimmed.length === 0) {
+    return fallbackGroup;
+  }
+  if (VALID_GROUPS.has(trimmed as GroupCategory)) {
+    return trimmed as GroupCategory;
+  }
+  const lower = trimmed.toLowerCase();
+  if (Array.isArray(allowedCategories)) {
+    for (const allowed of allowedCategories) {
+      if (allowed.toLowerCase() === lower) {
+        return allowed as GroupCategory;
+      }
+    }
+  }
+  return fallbackGroup;
+}
+
 function sanitizeDecideOutput(
   candidate: DecideOutput,
-  fallback: DecideOutput
+  fallback: DecideOutput,
+  allowedCategories?: readonly string[]
 ): DecideOutput {
-  const group = VALID_GROUPS.has(candidate.group)
-    ? candidate.group
-    : fallback.group;
+  const group = resolveDecideGroup(
+    candidate.group,
+    fallback.group,
+    allowedCategories
+  );
   const priority = VALID_PRIORITIES.has(candidate.priority)
     ? candidate.priority
     : fallback.priority;
@@ -1628,18 +1695,8 @@ export function createMediaCheckPostHandler(
   };
 }
 
-const PLAN_MEDICAL_PATTERN =
-  /\b(doctor|dr\.?|clinic|hospital|dentist|pharmacy|medicine|medication|pill|checkup|check-up|lab|x-ray|therapy|physio|vaccine|appointment)\b/i;
-const PLAN_FAMILY_PATTERN =
-  /\b(family|dinner|lunch|breakfast|birthday|visit|grandchild|grandchildren|daughter|son|sister|brother|friend|wedding|party|reunion|coffee|tea|club|church|mosque|temple)\b/i;
-const PLAN_BILLS_PATTERN =
-  /\b(bill|pay|payment|bank|rent|electric|electricity|water|phone|tax|insurance|grocer|grocery|groceries|market|shop|shopping|post office|errand|repair|plumber)\b/i;
-
 function inferPlanCategory(title: string): CalendarCategory {
-  if (PLAN_MEDICAL_PATTERN.test(title)) return 'Medical';
-  if (PLAN_FAMILY_PATTERN.test(title)) return 'Family & Social';
-  if (PLAN_BILLS_PATTERN.test(title)) return 'Bills & Errands';
-  return 'Daily Routine';
+  return inferCalendarCategory(title);
 }
 
 function sanitizeCalendarCandidate(
@@ -1796,7 +1853,7 @@ function extractDeterministicPlanCandidates(
             date: detected.date,
             time: detected.time,
             ...(detected.location ? { location: detected.location } : {}),
-            category: inferPlanCategory(detected.title),
+            category: detected.category ?? inferPlanCategory(detected.title),
             confidence: 0.85,
           },
           `device-event-${counter}`
@@ -2249,6 +2306,10 @@ export function createDecidePostHandler(
         text: rawItem.text,
       };
 
+      const allowedCategories = parseInboxCategoriesHeader(
+        req.headers.get('x-inbox-categories')
+      );
+
       const envSource = deps.env ?? getProcessEnv();
       const apiKey = envSource.AI_API_KEY || envSource.GEMINI_API_KEY;
 
@@ -2256,8 +2317,15 @@ export function createDecidePostHandler(
       let output: DecideOutput = baseline;
 
       if (apiKey && deps.aiProvider) {
-        const providerResult = await deps.aiProvider(item, apiKey);
-        output = sanitizeDecideOutput(providerResult, baseline);
+        const providerResult =
+          allowedCategories.length > 0
+            ? await deps.aiProvider(item, apiKey, { allowedCategories })
+            : await deps.aiProvider(item, apiKey);
+        output = sanitizeDecideOutput(
+          providerResult,
+          baseline,
+          allowedCategories
+        );
       }
 
       return logAndReturn(

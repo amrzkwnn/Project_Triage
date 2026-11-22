@@ -34,6 +34,7 @@ import { confirmFromTap } from '@/lib/actions/confirmation';
 import { execute } from '@/lib/actions/executor';
 import { canShowAskFamily, shareItemWithFamily } from '@/lib/actions/sharing';
 import { analyze } from '@/lib/ai/engine';
+import { inferCalendarCategory } from '@/lib/calendar/categories';
 import { isDuplicateEvent } from '@/lib/calendar/snap';
 import { availableForwardActions } from '@/lib/inbox/events';
 import {
@@ -394,7 +395,9 @@ export async function confirmForwardToCalendarWithVault(params: {
           date: ev.date,
           time: ev.time,
           ...(ev.location ? { location: ev.location } : {}),
-          category: 'Medical',
+          category:
+            ev.category ??
+            inferCalendarCategory(`${ev.title} ${params.item.text}`),
           sourceItemId: itemId,
           createdAt: new Date().toISOString(),
         };
@@ -417,6 +420,8 @@ export async function confirmForwardToCalendarWithVault(params: {
 
   return { ok: true, createdEvent: createdEvent! };
 }
+
+export const forwardEventToCalendar = confirmForwardToCalendarWithVault;
 
 export function UnifiedInboxPage({
   initialSettings,
@@ -2037,6 +2042,12 @@ export function UnifiedInboxPage({
                         {pendingCalendarForward.event.location
                           ? ` • Location: ${pendingCalendarForward.event.location}`
                           : ''}
+                        {` • Category: ${
+                          pendingCalendarForward.event.category ??
+                          inferCalendarCategory(
+                            `${pendingCalendarForward.event.title} ${pendingCalendarForward.item.text}`
+                          )
+                        }`}
                       </p>
                       {pendingCalendarForward.isDuplicate ? (
                         <p

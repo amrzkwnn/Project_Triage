@@ -60,6 +60,7 @@ export async function callDecideProxy(
     timeoutMs?: number;
     endpoint?: string;
     token?: string;
+    allowedCategories?: readonly string[];
   }
 ): Promise<Result<DecideProxyResponse, DecideProxyError>> {
   const fetchFn = deps?.fetchFn ?? globalThis.fetch;
@@ -98,6 +99,29 @@ export async function callDecideProxy(
     };
     if (token.trim().length > 0) {
       headers.Authorization = `Bearer ${token.trim()}`;
+    }
+    if (Array.isArray(deps?.allowedCategories) && deps.allowedCategories.length > 0) {
+      const seen = new Set<string>();
+      const cleaned: string[] = [];
+      for (const rawCat of deps.allowedCategories) {
+        if (typeof rawCat !== 'string') continue;
+        const trimmed = rawCat.trim().replace(/\s+/g, ' ');
+        const lower = trimmed.toLowerCase();
+        if (
+          trimmed.length === 0 ||
+          lower === 'all' ||
+          lower === 'promotion' ||
+          seen.has(lower)
+        ) {
+          continue;
+        }
+        seen.add(lower);
+        cleaned.push(trimmed);
+        if (cleaned.length >= 20) break;
+      }
+      if (cleaned.length > 0) {
+        headers['x-inbox-categories'] = cleaned.join(',');
+      }
     }
 
     const fetchPromise = Promise.resolve().then(() =>
