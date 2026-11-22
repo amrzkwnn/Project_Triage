@@ -18,8 +18,13 @@ import { SeniorButton } from '@/components/SeniorButton';
 import { StatusLive } from '@/components/StatusLive';
 import {
   buildCloudLoginRedirectUrl,
+  clearEmailCheckStatus,
   completeCloudLoginCallback,
+  disconnectEmailAccount,
   parseCloudLoginCallback,
+  saveEmailCheckStatus,
+  syncEmailsFromRelay,
+  verifyCloudEmailConnection,
   type EmailProvider,
 } from '@/lib/inbox/emailClient';
 import {
@@ -69,6 +74,23 @@ const CHANNEL_DESCRIPTIONS: Record<Channel, string> = {
 const AI_EXPLANATION_TEXT =
   'When AI Reading is ON, this helper sends only the one message or photo you are checking to our helper service. It reads that one item to write a short summary and spot scam signs, and does not keep it afterwards. You can turn this off at any time.';
 
+type EmailConnectionState =
+  | 'idle'
+  | 'checking'
+  | 'connected'
+  | 'expired'
+  | 'disconnected'
+  | 'offline';
+
+function formatFirstCheckSummary(checkedCount: number, newCount: number): string {
+  const checkedWord = checkedCount === 1 ? 'email' : 'emails';
+  if (newCount === 0) {
+    return `Checked ${checkedCount} recent ${checkedWord}. You are all caught up.`;
+  }
+  const newWord = newCount === 1 ? 'email' : 'emails';
+  return `Checked ${checkedCount} recent ${checkedWord} and added ${newCount} new ${newWord} to your Unified Inbox.`;
+}
+
 export function MyDataPage({
   initialSettings,
   initialAudit,
@@ -110,6 +132,13 @@ export function MyDataPage({
   >(undefined);
   const [emailNotice, setEmailNotice] = React.useState<string | undefined>(undefined);
   const [emailError, setEmailError] = React.useState<string | undefined>(undefined);
+  const [connectionState, setConnectionState] =
+    React.useState<EmailConnectionState>('idle');
+  const [isCheckingFirstEmails, setIsCheckingFirstEmails] =
+    React.useState<boolean>(false);
+  const [lastCheckSummary, setLastCheckSummary] = React.useState<
+    string | undefined
+  >(undefined);
 
   const resolvedVault = React.useMemo(
     () => vault ?? (typeof window !== 'undefined' ? createVault() : undefined),
@@ -128,38 +157,103 @@ export function MyDataPage({
 
     void (async () => {
       let latestSettings = settings;
+      let storedTokens: OAuthTokenRecord[] = [];
 
-      if (resolvedVault && needsInitialLoad) {
-        const [settingsRes, auditRes, tokensRes] = await Promise.all([
-          resolvedVault.getSettings(),
-          resolvedVault.listAudit(),
-          typeof resolvedVault.listOAuthTokens === 'function'
-            ? resolvedVault.listOAuthTokens()
-            : Promise.resolve({
-                ok: true as const,
-                value: [] as OAuthTokenRecord[],
-              }),
-        ]);
+      const search =
+        typeof window !== 'undefined' && window.location
+          ? (window.location.search ?? '')
+          : '';
+      const hash =
+        typeof window !== 'undefined' && window.location
+          ? (window.location.hash ?? '')
+          : '';
+      const hasCallback = Boolean(parseCloudLoginCallback(search, hash));
+
+      if (resolvedVault) {
+        if (needsInitialLoad) {
+          const [settingsRes, auditRes, tokensRes] = await Promise.all([
+            resolvedVault.getSettings(),
+            resolvedVault.listAudit(),
+            typeof resolvedVault.listOAuthTokens === 'function'
+              ? resolvedVault.listOAuthTokens()
+              : Promise.resolve({
+                  ok: true as const,
+                  value: [] as OAuthTokenRecord[],
+                }),
+          ]);
+          if (cancelled) return;
+          if (settingsRes.ok) {
+            latestSettings = settingsRes.value;
+            setSettings(settingsRes.value);
+            setAiState(createAiToggleState(settingsRes.value.allowAiReading));
+          }
+          if (auditRes.ok) {
+            setAuditEntries(auditRes.value);
+          }
+          if (tokensRes.ok) {
+            storedTokens = tokensRes.value;
+          }
+        } else if (typeof resolvedVault.listOAuthTokens === 'function') {
+          const tokensRes = await resolvedVault.listOAuthTokens();
+          if (cancelled) return;
+          if (tokensRes.ok) {
+            storedTokens = tokensRes.value;
+          }
+        }
+      }
+
+      if (!hasCallback) {
+        if (storedTokens.length === 0) {
+          setConnectedAccount(undefined);
+          setConnectionState('disconnected');
+          return;
+        }
+
+        const primaryRecord = storedTokens[0];
+        const trimmedToken =
+          typeof primaryRecord.token === 'string'
+            ? primaryRecord.token.trim()
+            : '';
+
+        if (
+          trimmedToken.length === 0 ||
+          trimmedToken === 'readonly-session'
+        ) {
+          for (const rec of storedTokens) {
+            const recToken =
+              typeof rec.token === 'string' ? rec.token.trim() : '';
+            if (recToken.length === 0 || recToken === 'readonly-session') {
+              await resolvedVault?.deleteOAuthToken?.(rec.id);
+            }
+          }
+          if (cancelled) return;
+          setConnectedAccount(undefined);
+          setConnectionState('disconnected');
+          return;
+        }
+
+        setConnectionState('checking');
+        const verification = await verifyCloudEmailConnection({
+          record: primaryRecord,
+        });
         if (cancelled) return;
-        if (settingsRes.ok) {
-          latestSettings = settingsRes.value;
-          setSettings(settingsRes.value);
-          setAiState(createAiToggleState(settingsRes.value.allowAiReading));
-        }
-        if (auditRes.ok) {
-          setAuditEntries(auditRes.value);
-        }
-        if (tokensRes.ok && tokensRes.value.length > 0) {
-          setConnectedAccount(tokensRes.value[0]);
-        }
-      }
 
-      if (typeof window === 'undefined' || !window.location) {
-        return;
-      }
-      const search = window.location.search ?? '';
-      const hash = window.location.hash ?? '';
-      if (!parseCloudLoginCallback(search, hash)) {
+        if (verification.status === 'connected') {
+          setConnectedAccount(primaryRecord);
+          setConnectionState('connected');
+          setEmailError(undefined);
+        } else if (verification.status === 'expired') {
+          setConnectedAccount(primaryRecord);
+          setConnectionState('expired');
+          setEmailError(verification.message);
+        } else if (verification.status === 'offline') {
+          setConnectedAccount(primaryRecord);
+          setConnectionState('offline');
+          setEmailNotice(verification.message);
+        } else {
+          setConnectedAccount(undefined);
+          setConnectionState('disconnected');
+        }
         return;
       }
 
@@ -191,22 +285,99 @@ export function MyDataPage({
       const res = await callbackPromise;
       if (cancelled) return;
 
-      if (res.ok) {
-        setConnectedAccount(res.record);
-        setSettings(res.settings);
-        onSettingsChange?.(res.settings);
-        setEmailError(undefined);
-        setEmailNotice(res.message);
-        setStatusMessage(res.message);
-      } else {
-        setEmailNotice(undefined);
-        setEmailError(res.errorMessage);
-        setStatusMessage(res.errorMessage);
-      }
       try {
         window.history.replaceState(null, '', window.location.pathname);
       } catch {
         // ignore history error
+      }
+
+      if (!res.ok) {
+        setConnectionState('disconnected');
+        setEmailNotice(undefined);
+        setEmailError(res.errorMessage);
+        setStatusMessage(res.errorMessage);
+        return;
+      }
+
+      setConnectedAccount(res.record);
+      setConnectionState('connected');
+      setSettings(res.settings);
+      onSettingsChange?.(res.settings);
+      setEmailError(undefined);
+      setEmailNotice('Signed in! Checking your emails now...');
+      setStatusMessage('Signed in! Checking your emails now...');
+
+      if (
+        resolvedVault &&
+        typeof resolvedVault.listItems === 'function' &&
+        typeof resolvedVault.putItem === 'function'
+      ) {
+        setIsCheckingFirstEmails(true);
+        try {
+          const checkRes = await syncEmailsFromRelay({
+            vault: resolvedVault,
+            settings: res.settings,
+          });
+          if (cancelled) return;
+          const nowIso = new Date().toISOString();
+          const provider: EmailProvider | undefined =
+            res.record.provider === 'Gmail' || res.record.provider === 'Outlook'
+              ? res.record.provider
+              : undefined;
+
+          if (!checkRes.ok) {
+            saveEmailCheckStatus({
+              account: res.record.account,
+              ...(provider ? { provider } : {}),
+              checkedAtIso: nowIso,
+              checkedCount: 0,
+              newCount: 0,
+              status: 'error',
+              message: checkRes.errorMessage,
+            });
+            setEmailNotice(undefined);
+            setEmailError(checkRes.errorMessage);
+            setStatusMessage(checkRes.errorMessage);
+          } else if (checkRes.reconnectRequired) {
+            const msg = checkRes.reconnectMessage ?? checkRes.message;
+            saveEmailCheckStatus({
+              account: res.record.account,
+              ...(provider ? { provider } : {}),
+              checkedAtIso: nowIso,
+              checkedCount: checkRes.checkedCount,
+              newCount: 0,
+              status: 'expired',
+              message: msg,
+            });
+            setConnectionState('expired');
+            setEmailNotice(undefined);
+            setEmailError(msg);
+            setStatusMessage(msg);
+          } else {
+            const checkedCount = checkRes.checkedCount;
+            const newCount = checkRes.stored.length;
+            const summaryText = formatFirstCheckSummary(checkedCount, newCount);
+            saveEmailCheckStatus({
+              account: res.record.account,
+              ...(provider ? { provider } : {}),
+              checkedAtIso: nowIso,
+              checkedCount,
+              newCount,
+              status: 'ok',
+              message: summaryText,
+            });
+            setLastCheckSummary(summaryText);
+            setEmailNotice(summaryText);
+            setStatusMessage(summaryText);
+          }
+        } finally {
+          if (!cancelled) {
+            setIsCheckingFirstEmails(false);
+          }
+        }
+      } else {
+        setEmailNotice(res.message);
+        setStatusMessage(res.message);
       }
     })();
 
@@ -279,6 +450,28 @@ export function MyDataPage({
     if (typeof window !== 'undefined') {
       window.location.assign(built.url);
     }
+  };
+
+  const handleDisconnectEmail = async () => {
+    setEmailError(undefined);
+    setEmailNotice(undefined);
+    const res = await disconnectEmailAccount({
+      vault: resolvedVault,
+      settings,
+    });
+    if (!res.ok) {
+      setEmailError(res.errorMessage);
+      setStatusMessage(res.errorMessage);
+      return;
+    }
+    setConnectedAccount(undefined);
+    setConnectionState('disconnected');
+    setLastCheckSummary(undefined);
+    setIsCheckingFirstEmails(false);
+    setSettings(res.settings);
+    onSettingsChange?.(res.settings);
+    setEmailNotice(res.message);
+    setStatusMessage(res.message);
   };
 
   const saveSettingsWithRollback = async (
@@ -416,6 +609,10 @@ export function MyDataPage({
       setAiState(createAiToggleState(false));
       setAuditEntries([]);
       setConnectedAccount(undefined);
+      setConnectionState('disconnected');
+      setLastCheckSummary(undefined);
+      setIsCheckingFirstEmails(false);
+      clearEmailCheckStatus();
       setEmailNotice(undefined);
       setEmailError(undefined);
       setEraseStep(0);
@@ -439,6 +636,10 @@ export function MyDataPage({
     setAiState(createAiToggleState(false));
     setAuditEntries([]);
     setConnectedAccount(undefined);
+    setConnectionState('disconnected');
+    setLastCheckSummary(undefined);
+    setIsCheckingFirstEmails(false);
+    clearEmailCheckStatus();
     setEmailNotice(undefined);
     setEmailError(undefined);
     setEraseStep(0);
@@ -539,8 +740,22 @@ export function MyDataPage({
             </p>
           </div>
 
-          {connectedAccount ? (
-            <div>
+          <div>
+            {isCheckingFirstEmails || connectionState === 'checking' ? (
+              <span
+                data-badge="true"
+                className="inline-flex items-center gap-2 rounded-full border-2 border-brand-soft bg-brand-wash px-3.5 py-1.5 text-[16px] font-bold text-brand-deep shadow-pill"
+              >
+                <span aria-hidden="true" className="inline-flex shrink-0">
+                  <RefreshCw size={16} className="animate-spin" />
+                </span>
+                <span>
+                  {isCheckingFirstEmails
+                    ? 'Checking Emails Now...'
+                    : 'Checking Email Connection...'}
+                </span>
+              </span>
+            ) : connectionState === 'connected' && connectedAccount ? (
               <span
                 data-badge="true"
                 className="inline-flex items-center gap-2 rounded-full border-2 border-emerald-200 bg-emerald-50 px-3.5 py-1.5 text-[16px] font-bold text-emerald-800 shadow-pill"
@@ -549,12 +764,45 @@ export function MyDataPage({
                   <Check size={16} />
                 </span>
                 <span>
-                  Connected ({connectedAccount.provider}):{' '}
-                  {connectedAccount.account}
+                  {`Connected (${connectedAccount.provider}): ${connectedAccount.account}`}
                 </span>
               </span>
-            </div>
-          ) : null}
+            ) : connectionState === 'expired' && connectedAccount ? (
+              <span
+                data-badge="true"
+                className="inline-flex items-center gap-2 rounded-full border-2 border-[#D97706] bg-amber-50 px-3.5 py-1.5 text-[16px] font-bold text-[#92400E] shadow-pill"
+              >
+                <span aria-hidden="true" className="inline-flex shrink-0">
+                  <AlertTriangle size={16} />
+                </span>
+                <span>
+                  {`Reconnect Needed (${connectedAccount.provider}): ${connectedAccount.account}`}
+                </span>
+              </span>
+            ) : connectionState === 'offline' && connectedAccount ? (
+              <span
+                data-badge="true"
+                className="inline-flex items-center gap-2 rounded-full border-2 border-[#D97706] bg-amber-50 px-3.5 py-1.5 text-[16px] font-bold text-[#92400E] shadow-pill"
+              >
+                <span aria-hidden="true" className="inline-flex shrink-0">
+                  <AlertTriangle size={16} />
+                </span>
+                <span>
+                  {`Saved Account (${connectedAccount.provider}): ${connectedAccount.account} — Could Not Check Now`}
+                </span>
+              </span>
+            ) : (
+              <span
+                data-badge="true"
+                className="inline-flex items-center gap-2 rounded-full border-2 border-line bg-canvas px-3.5 py-1.5 text-[16px] font-bold text-muted shadow-pill"
+              >
+                <span aria-hidden="true" className="inline-flex shrink-0">
+                  <Mail size={16} />
+                </span>
+                <span>Not connected yet</span>
+              </span>
+            )}
+          </div>
 
           {emailError ? (
             <div
@@ -596,6 +844,37 @@ export function MyDataPage({
             >
               Sign In with Outlook (Read-Only)
             </SeniorButton>
+
+            {lastCheckSummary ? (
+              <SeniorButton
+                variant="safe"
+                href="/inbox"
+                icon={<Mail size={20} />}
+                onClick={
+                  onNavigate
+                    ? (e) => {
+                        e.preventDefault();
+                        onNavigate('/inbox');
+                      }
+                    : undefined
+                }
+              >
+                Open Unified Inbox
+              </SeniorButton>
+            ) : null}
+
+            {connectedAccount &&
+            (connectionState === 'connected' ||
+              connectionState === 'expired' ||
+              connectionState === 'offline') ? (
+              <SeniorButton
+                variant="secondary"
+                icon={<X size={20} />}
+                onClick={() => void handleDisconnectEmail()}
+              >
+                Disconnect Email
+              </SeniorButton>
+            ) : null}
           </div>
         </div>
       </section>

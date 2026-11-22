@@ -1,4 +1,10 @@
+import React from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it, vi } from 'vitest';
+import { BackToHome } from '@/components/BackToHome';
+import { SeniorButton } from '@/components/SeniorButton';
+import { MyDataPage } from '@/app/my-data/page';
+import { UnifiedInboxPage } from '@/app/inbox/page';
 import { createDefaultSettings, type InboxItem } from '@/lib/types';
 import { createVault } from '@/lib/vault/store';
 import {
@@ -574,6 +580,683 @@ describe('Task 1: Truthful Cloud Connection Verification, Disconnect, Parallel F
         expect(() => clearEmailCheckStatus()).not.toThrow();
       } finally {
         vi.unstubAllGlobals();
+      }
+    });
+  });
+});
+
+function createFakeLocalStorage(): Storage {
+  const store = new Map<string, string>();
+  return {
+    get length() {
+      return store.size;
+    },
+    clear() {
+      store.clear();
+    },
+    getItem(key: string) {
+      return store.has(key) ? store.get(key)! : null;
+    },
+    key(index: number) {
+      return Array.from(store.keys())[index] ?? null;
+    },
+    removeItem(key: string) {
+      store.delete(key);
+    },
+    setItem(key: string, value: string) {
+      store.set(key, value);
+    },
+  };
+}
+
+function findElements(
+  node: React.ReactNode,
+  predicate: (el: React.ReactElement<Record<string, unknown>>) => boolean,
+  acc: React.ReactElement<Record<string, unknown>>[] = []
+): React.ReactElement<Record<string, unknown>>[] {
+  if (!node) return acc;
+  if (Array.isArray(node)) {
+    for (const child of node) {
+      findElements(child, predicate, acc);
+    }
+    return acc;
+  }
+  if (React.isValidElement(node)) {
+    const el = node as React.ReactElement<Record<string, unknown>>;
+    if (predicate(el)) {
+      acc.push(el);
+    }
+    if (el.props && 'children' in el.props) {
+      findElements(el.props.children as React.ReactNode, predicate, acc);
+    }
+  }
+  return acc;
+}
+
+function stripTags(html: string): string {
+  return html
+    .replace(/<svg[\s\S]*?<\/svg>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function extractBadges(html: string): string[] {
+  const badges: string[] = [];
+  const openPattern = /<(span|div|a)\b[^>]*data-badge="true"[^>]*>/gi;
+  let match: RegExpExecArray | null;
+  while ((match = openPattern.exec(html)) !== null) {
+    const tag = match[1].toLowerCase();
+    const startIdx = match.index;
+    const tagTokenPattern = new RegExp(`<(\\/?)${tag}\\b[^>]*>`, 'gi');
+    tagTokenPattern.lastIndex = openPattern.lastIndex;
+    let depth = 1;
+    let endIdx = html.length;
+    let token: RegExpExecArray | null;
+    while ((token = tagTokenPattern.exec(html)) !== null) {
+      depth += token[1] === '/' ? -1 : 1;
+      if (depth === 0) {
+        endIdx = tagTokenPattern.lastIndex;
+        break;
+      }
+    }
+    badges.push(html.slice(startIdx, endIdx));
+  }
+  return badges;
+}
+
+function createHookHarness() {
+  const stateSlots: unknown[] = [];
+  const refSlots: Array<{ current: unknown }> = [];
+  const effectPrevDeps: Array<readonly unknown[] | undefined> = [];
+  let stateCursor = 0;
+  let refCursor = 0;
+  let effectCursor = 0;
+  let queuedEffects: Array<() => void | (() => void)> = [];
+
+  const useStateSpy = vi.spyOn(React, 'useState').mockImplementation(((
+    initialState: unknown
+  ) => {
+    const idx = stateCursor++;
+    if (!(idx in stateSlots)) {
+      stateSlots[idx] =
+        typeof initialState === 'function'
+          ? (initialState as () => unknown)()
+          : initialState;
+    }
+    const setState = (next: unknown) => {
+      stateSlots[idx] =
+        typeof next === 'function'
+          ? (next as (prev: unknown) => unknown)(stateSlots[idx])
+          : next;
+    };
+    return [stateSlots[idx], setState];
+  }) as typeof React.useState);
+
+  const useRefSpy = vi.spyOn(React, 'useRef').mockImplementation(((
+    initialValue: unknown
+  ) => {
+    const idx = refCursor++;
+    if (!(idx in refSlots)) {
+      refSlots[idx] = { current: initialValue };
+    }
+    return refSlots[idx];
+  }) as typeof React.useRef);
+
+  const useMemoSpy = vi
+    .spyOn(React, 'useMemo')
+    .mockImplementation((factory) => factory());
+  const useCallbackSpy = vi
+    .spyOn(React, 'useCallback')
+    .mockImplementation((fn) => fn);
+  const useEffectSpy = vi
+    .spyOn(React, 'useEffect')
+    .mockImplementation((effect, deps) => {
+      const idx = effectCursor++;
+      const prevDeps = effectPrevDeps[idx];
+      const depsChanged =
+        !prevDeps ||
+        !deps ||
+        prevDeps.length !== deps.length ||
+        deps.some((d, i) => !Object.is(d, prevDeps[i]));
+      if (depsChanged) {
+        effectPrevDeps[idx] = deps ? [...deps] : undefined;
+        queuedEffects.push(effect as () => void | (() => void));
+      }
+    });
+
+  return {
+    render<T extends React.ReactNode>(renderFn: () => T): T {
+      stateCursor = 0;
+      refCursor = 0;
+      effectCursor = 0;
+      queuedEffects = [];
+      const tree = renderFn();
+      for (const eff of queuedEffects) {
+        eff();
+      }
+      return tree;
+    },
+    restore() {
+      useEffectSpy.mockRestore();
+      useCallbackSpy.mockRestore();
+      useMemoSpy.mockRestore();
+      useRefSpy.mockRestore();
+      useStateSpy.mockRestore();
+    },
+  };
+}
+
+describe('Task 2: Truthful Connection Badge, Disconnect, Auto-Check, Live Inbox Status Card & 1-Arrow Back Button', () => {
+  describe('BackToHome 1-arrow fix', () => {
+    it('renders exactly 1 arrow (← Back to Home) and NO <svg inside it', () => {
+      const html = renderToStaticMarkup(<BackToHome />);
+      expect(html).toContain('← Back to Home');
+      expect(html).not.toContain('<svg');
+      const arrowMatches = html.match(/←/g) ?? [];
+      expect(arrowMatches).toHaveLength(1);
+    });
+  });
+
+  describe('MyDataPage truthful connection badge, auto-check, and disconnect', () => {
+    it('renders "Not connected yet" badge by default (dual-modality + border-2) with zero banned jargon', () => {
+      const html = renderToStaticMarkup(
+        <MyDataPage initialSettings={createDefaultSettings()} initialAudit={[]} />
+      );
+      expect(html).toContain('Not connected yet');
+      expect(html).not.toContain('Connected (Gmail)');
+      expect(html).not.toContain('Connected (Outlook)');
+      expect(html).not.toContain('Disconnect Email');
+
+      const badges = extractBadges(html);
+      expect(badges.length).toBeGreaterThan(0);
+      const notConnectedBadge = badges.find((b) => b.includes('Not connected yet'));
+      expect(notConnectedBadge).toBeDefined();
+      expect(notConnectedBadge).toContain('border-2');
+      expect(notConnectedBadge).toContain('aria-hidden="true"');
+      expect(stripTags(notConnectedBadge!)).toContain('Not connected yet');
+
+      expect(stripTags(html)).not.toMatch(BANNED_JARGON);
+      const buttons = html.match(/<button\b[^>]*>[\s\S]*?<\/button>/gi) ?? [];
+      for (const btn of buttons) {
+        expect(btn).toContain('min-h-[56px]');
+        expect(stripTags(btn).length).toBeGreaterThan(0);
+      }
+    });
+
+    it('auto-deletes stale readonly-session stub on mount and never renders green Connected', async () => {
+      const vault = createVault({ dbName: 'test_mydata_stub_cleanup_v1' });
+      await vault.saveSettings(createDefaultSettings());
+      await vault.saveOAuthToken({
+        id: 'email-account-primary',
+        account: 'stub.grandma@gmail.com',
+        provider: 'Gmail',
+        token: 'readonly-session',
+      });
+
+      const harness = createHookHarness();
+      const fetchSpy = vi
+        .spyOn(globalThis, 'fetch')
+        .mockRejectedValue(new Error('should not fetch for stub'));
+
+      vi.stubGlobal('window', {
+        location: {
+          origin: 'http://localhost:5173',
+          pathname: '/my-data',
+          search: '',
+          hash: '',
+          assign: vi.fn(),
+        },
+        history: { replaceState: vi.fn() },
+        localStorage: createFakeLocalStorage(),
+      });
+
+      try {
+        harness.render(() => MyDataPage({ vault }));
+        await new Promise((r) => setTimeout(r, 40));
+        const finalTree = harness.render(() => MyDataPage({ vault }));
+
+        const tokensAfter = await vault.listOAuthTokens();
+        expect(tokensAfter.ok).toBe(true);
+        if (tokensAfter.ok) {
+          expect(tokensAfter.value).toEqual([]);
+        }
+        expect(fetchSpy).not.toHaveBeenCalled();
+
+        const badges = findElements(
+          finalTree,
+          (el) => el.props['data-badge'] === 'true'
+        );
+        const badgeText = JSON.stringify(badges);
+        expect(badgeText).toContain('Not connected yet');
+        expect(badgeText).not.toContain('Connected (Gmail)');
+        expect(badgeText).not.toContain('stub.grandma@gmail.com');
+      } finally {
+        vi.unstubAllGlobals();
+        fetchSpy.mockRestore();
+        harness.restore();
+      }
+    });
+
+    it('shows Reconnect Needed (never green Connected) on mount when stored token returns 401, and Disconnect Email removes it', async () => {
+      const vault = createVault({ dbName: 'test_mydata_expired_disconnect_v1' });
+      const onSettings = {
+        ...createDefaultSettings(),
+        channels: { ...createDefaultSettings().channels, email: true },
+      };
+      await vault.saveSettings(onSettings);
+      await vault.saveOAuthToken({
+        id: 'email-account-primary',
+        account: 'mary.tan@gmail.com',
+        provider: 'Gmail',
+        token: 'ya29.expired-401',
+      });
+
+      const harness = createHookHarness();
+      const fetchSpy = vi
+        .spyOn(globalThis, 'fetch')
+        .mockImplementation((async () =>
+          new Response('Unauthorized', { status: 401 })) as typeof fetch);
+
+      vi.stubGlobal('window', {
+        location: {
+          origin: 'http://localhost:5173',
+          pathname: '/my-data',
+          search: '',
+          hash: '',
+          assign: vi.fn(),
+        },
+        history: { replaceState: vi.fn() },
+        localStorage: createFakeLocalStorage(),
+      });
+
+      try {
+        harness.render(() => MyDataPage({ vault }));
+        await new Promise((r) => setTimeout(r, 40));
+        const expiredTree = harness.render(() => MyDataPage({ vault }));
+
+        const badges = findElements(
+          expiredTree,
+          (el) => el.props['data-badge'] === 'true'
+        );
+        const badgeText = JSON.stringify(badges);
+        expect(badgeText).toContain('Reconnect Needed');
+        expect(badgeText).not.toContain('Connected (Gmail)');
+
+        const disconnectBtn = findElements(
+          expiredTree,
+          (el) =>
+            el.type === SeniorButton &&
+            String(el.props.children).includes('Disconnect Email')
+        )[0];
+        expect(disconnectBtn).toBeDefined();
+
+        await (disconnectBtn.props.onClick as () => Promise<void>)();
+        await new Promise((r) => setTimeout(r, 30));
+
+        const afterDisconnectTree = harness.render(() => MyDataPage({ vault }));
+        const badgesAfter = findElements(
+          afterDisconnectTree,
+          (el) => el.props['data-badge'] === 'true'
+        );
+        expect(JSON.stringify(badgesAfter)).toContain('Not connected yet');
+
+        const tokensAfter = await vault.listOAuthTokens();
+        expect(tokensAfter.ok && tokensAfter.value).toEqual([]);
+        const settingsAfter = await vault.getSettings();
+        expect(settingsAfter.ok && settingsAfter.value.channels.email).toBe(false);
+      } finally {
+        vi.unstubAllGlobals();
+        fetchSpy.mockRestore();
+        harness.restore();
+      }
+    });
+
+    it('immediately runs syncEmailsFromRelay on OAuth callback completion, persists check status, and renders checked/new counts + Open Unified Inbox + Disconnect Email', async () => {
+      const vault = createVault({ dbName: 'test_mydata_callback_autocheck_v1' });
+      await vault.saveSettings(createDefaultSettings());
+
+      const fakeStorage = createFakeLocalStorage();
+      const replaceState = vi.fn();
+      const harness = createHookHarness();
+
+      const mockFetch = vi.fn(async (input: RequestInfo | URL) => {
+        const url = typeof input === 'string' ? input : input.toString();
+        if (url.includes('userinfo')) {
+          return new Response(JSON.stringify({ email: 'ah.lin@gmail.com' }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
+        if (url.includes('maxResults=1') && !url.includes('maxResults=10')) {
+          return new Response(JSON.stringify({ messages: [{ id: 'g-101' }] }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
+        if (url.includes('maxResults=10')) {
+          return new Response(
+            JSON.stringify({ messages: [{ id: 'g-101' }, { id: 'g-102' }] }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } }
+          );
+        }
+        if (url.includes('/messages/g-101')) {
+          return new Response(
+            JSON.stringify({
+              id: 'g-101',
+              snippet: 'Your clinic checkup is on 2026-12-01 at 10:00.',
+              payload: {
+                headers: [
+                  { name: 'From', value: 'City Clinic <care@clinic.sg>' },
+                  { name: 'Subject', value: 'Checkup Reminder' },
+                  { name: 'Date', value: 'Sun, 22 Nov 2026 04:00:00 +0000' },
+                ],
+              },
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } }
+          );
+        }
+        if (url.includes('/messages/g-102')) {
+          return new Response(
+            JSON.stringify({
+              id: 'g-102',
+              snippet: 'Family dinner this Sunday at 6pm.',
+              payload: {
+                headers: [
+                  { name: 'From', value: 'Mei Ling <mei@family.sg>' },
+                  { name: 'Subject', value: 'Sunday Dinner' },
+                  { name: 'Date', value: 'Sun, 22 Nov 2026 04:05:00 +0000' },
+                ],
+              },
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } }
+          );
+        }
+        if (url.includes('/api/ingest/pull')) {
+          return new Response(JSON.stringify({ items: [] }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
+        return new Response('Not found', { status: 404 });
+      }) as unknown as typeof fetch;
+
+      const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(mockFetch);
+
+      vi.stubGlobal('window', {
+        location: {
+          origin: 'http://localhost:5173',
+          pathname: '/my-data',
+          search: '',
+          hash: '#access_token=ya29.fresh-live&scope=https://www.googleapis.com/auth/gmail.readonly%20https://www.googleapis.com/auth/userinfo.email&state=provider%3DGmail',
+          assign: vi.fn(),
+        },
+        history: { replaceState },
+        localStorage: fakeStorage,
+      });
+
+      try {
+        harness.render(() => MyDataPage({ vault }));
+        await new Promise((r) => setTimeout(r, 80));
+        const finalTree = harness.render(() => MyDataPage({ vault }));
+
+        const snapshot = readEmailCheckStatus();
+        expect(snapshot).toBeDefined();
+        expect(snapshot?.account).toBe('ah.lin@gmail.com');
+        expect(snapshot?.provider).toBe('Gmail');
+        expect(snapshot?.checkedCount).toBe(2);
+        expect(snapshot?.newCount).toBe(2);
+        expect(snapshot?.status).toBe('ok');
+        expect(snapshot?.message).not.toMatch(BANNED_JARGON);
+
+        const serialized = JSON.stringify(finalTree);
+        expect(serialized).toContain('Connected (Gmail)');
+        expect(serialized).toContain('ah.lin@gmail.com');
+        expect(serialized).toContain('2');
+        expect(serialized).toContain('Open Unified Inbox');
+        expect(serialized).toContain('Disconnect Email');
+
+        const openInboxBtn = findElements(
+          finalTree,
+          (el) =>
+            el.type === SeniorButton &&
+            String(el.props.children).includes('Open Unified Inbox')
+        )[0];
+        expect(openInboxBtn).toBeDefined();
+        expect(openInboxBtn.props.href).toBe('/inbox');
+
+        const disconnectBtn = findElements(
+          finalTree,
+          (el) =>
+            el.type === SeniorButton &&
+            String(el.props.children).includes('Disconnect Email')
+        )[0];
+        expect(disconnectBtn).toBeDefined();
+
+        expect(replaceState).toHaveBeenCalledWith(null, '', '/my-data');
+      } finally {
+        vi.unstubAllGlobals();
+        fetchSpy.mockRestore();
+        harness.restore();
+      }
+    });
+  });
+
+  describe('UnifiedInboxPage Email Status Card, live checking state & cloud error visibility', () => {
+    it('renders Email Status Card (data-card="true") with Email Not Connected by default in SSR and zero banned jargon', () => {
+      vi.stubGlobal('window', undefined);
+      try {
+        const html = renderToStaticMarkup(
+          <UnifiedInboxPage
+            initialSettings={createDefaultSettings()}
+            initialItems={[]}
+          />
+        );
+        expect(html).toContain('data-card="true"');
+        expect(html).toContain('Email Not Connected');
+
+        const badges = extractBadges(html);
+        const statusBadge = badges.find((b) =>
+          b.includes('Email Not Connected')
+        );
+        expect(statusBadge).toBeDefined();
+        expect(statusBadge).toContain('border-2');
+        expect(statusBadge).toContain('aria-hidden="true"');
+
+        expect(stripTags(html)).not.toMatch(BANNED_JARGON);
+        const buttons = html.match(/<button\b[^>]*>[\s\S]*?<\/button>/gi) ?? [];
+        for (const btn of buttons) {
+          expect(btn).toContain('min-h-[56px]');
+          expect(stripTags(btn).length).toBeGreaterThan(0);
+        }
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    });
+
+    it('shows Checking Emails Now... while checking, then Connected (Gmail) + Last checked counts after completion', async () => {
+      const vault = createVault({ dbName: 'test_inbox_status_live_v1' });
+      const onSettings = {
+        ...createDefaultSettings(),
+        channels: { ...createDefaultSettings().channels, email: true },
+      };
+      await vault.saveSettings(onSettings);
+      await vault.saveOAuthToken({
+        id: 'email-account-primary',
+        account: 'mary.tan@gmail.com',
+        provider: 'Gmail',
+        token: 'ya29.live-inbox-check',
+      });
+
+      let resolveGmailList!: (res: Response) => void;
+      const gmailListPromise = new Promise<Response>((resolve) => {
+        resolveGmailList = resolve;
+      });
+
+      const mockFetch = (async (input: RequestInfo | URL) => {
+        const url = typeof input === 'string' ? input : input.toString();
+        if (url.startsWith('https://gmail.googleapis.com/gmail/v1/users/me/messages?')) {
+          return gmailListPromise;
+        }
+        if (url.includes('/messages/gm-1')) {
+          return new Response(
+            JSON.stringify({
+              id: 'gm-1',
+              snippet: 'Reminder for your appointment.',
+              payload: {
+                headers: [
+                  { name: 'From', value: 'Clinic <care@clinic.sg>' },
+                  { name: 'Subject', value: 'Appointment' },
+                  { name: 'Date', value: 'Sun, 22 Nov 2026 04:00:00 +0000' },
+                ],
+              },
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } }
+          );
+        }
+        if (url.includes('/api/ingest/pull')) {
+          return new Response(JSON.stringify({ items: [] }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
+        return new Response('Not found', { status: 404 });
+      }) as typeof fetch;
+
+      const fakeStorage = createFakeLocalStorage();
+      const harness = createHookHarness();
+      const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(mockFetch);
+
+      vi.stubGlobal('window', {
+        location: {
+          origin: 'http://localhost:5173',
+          pathname: '/inbox',
+          search: '',
+          hash: '',
+        },
+        localStorage: fakeStorage,
+      });
+
+      try {
+        // Render 1: initial loadData
+        harness.render(() => UnifiedInboxPage({ vault }));
+        await new Promise((r) => setTimeout(r, 30));
+
+        // Render 2: auto-check starts and pauses on gmailListPromise
+        harness.render(() => UnifiedInboxPage({ vault }));
+        await Promise.resolve();
+        await Promise.resolve();
+
+        // Render 3: while check is in flight -> "Checking Emails Now..." & "Checking Emails..."
+        const checkingTree = harness.render(() => UnifiedInboxPage({ vault }));
+        const checkingSerialized = JSON.stringify(checkingTree);
+        expect(checkingSerialized).toContain('Checking Emails Now...');
+        expect(checkingSerialized).toContain('Checking Emails...');
+        expect(checkingSerialized).toContain('animate-spin');
+
+        // Resolve Gmail fetch
+        resolveGmailList(
+          new Response(JSON.stringify({ messages: [{ id: 'gm-1' }] }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          })
+        );
+        await new Promise((r) => setTimeout(r, 60));
+
+        // Render 4: check completed -> Connected (Gmail) + Last checked + checked/new counts
+        const doneTree = harness.render(() => UnifiedInboxPage({ vault }));
+        const doneSerialized = JSON.stringify(doneTree);
+        expect(doneSerialized).toContain('Connected (Gmail)');
+        expect(doneSerialized).toContain('mary.tan@gmail.com');
+        expect(doneSerialized).toContain('Last checked');
+        expect(doneSerialized).toContain('Check for New Emails');
+
+        const persisted = readEmailCheckStatus();
+        expect(persisted).toBeDefined();
+        expect(persisted?.status).toBe('ok');
+        expect(persisted?.checkedCount).toBe(1);
+        expect(persisted?.newCount).toBe(1);
+      } finally {
+        vi.unstubAllGlobals();
+        fetchSpy.mockRestore();
+        harness.restore();
+      }
+    });
+
+    it('surfaces real cloud errors clearly even on initial mount check (silentOnError) and shows Reconnect Needed when 401', async () => {
+      const vault = createVault({ dbName: 'test_inbox_cloud_error_v1' });
+      const onSettings = {
+        ...createDefaultSettings(),
+        channels: { ...createDefaultSettings().channels, email: true },
+      };
+      await vault.saveSettings(onSettings);
+      await vault.saveOAuthToken({
+        id: 'email-account-primary',
+        account: 'mary.tan@gmail.com',
+        provider: 'Gmail',
+        token: 'ya29.server-500-token',
+      });
+
+      const mockFetch = (async (input: RequestInfo | URL) => {
+        const url = typeof input === 'string' ? input : input.toString();
+        if (url.startsWith('https://gmail.googleapis.com/')) {
+          return new Response('Internal Server Error', { status: 500 });
+        }
+        if (url.includes('/api/ingest/pull')) {
+          return new Response(JSON.stringify({ items: [] }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
+        return new Response('Not found', { status: 404 });
+      }) as typeof fetch;
+
+      const fakeStorage = createFakeLocalStorage();
+      const harness = createHookHarness();
+      const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(mockFetch);
+
+      vi.stubGlobal('window', {
+        location: {
+          origin: 'http://localhost:5173',
+          pathname: '/inbox',
+          search: '',
+          hash: '',
+        },
+        localStorage: fakeStorage,
+      });
+
+      try {
+        harness.render(() => UnifiedInboxPage({ vault }));
+        await new Promise((r) => setTimeout(r, 30));
+        harness.render(() => UnifiedInboxPage({ vault }));
+        await new Promise((r) => setTimeout(r, 50));
+
+        const errorTree = harness.render(() => UnifiedInboxPage({ vault }));
+        const alerts = findElements(
+          errorTree,
+          (el) => el.props.role === 'alert'
+        );
+        expect(alerts.length).toBeGreaterThan(0);
+        expect(JSON.stringify(alerts)).toContain(
+          'We could not check for new emails right now. Please try again.'
+        );
+        const persisted = readEmailCheckStatus();
+        expect(persisted?.status).toBe('error');
+
+        // Also check Reconnect Needed badge rendering in SSR when initialReconnectMessage is passed
+        const reconnectHtml = renderToStaticMarkup(
+          <UnifiedInboxPage
+            initialSettings={onSettings}
+            initialItems={[]}
+            initialReconnectMessage="Your email connection has ended."
+          />
+        );
+        expect(reconnectHtml).toContain('Reconnect Needed');
+        expect(stripTags(reconnectHtml)).not.toMatch(BANNED_JARGON);
+      } finally {
+        vi.unstubAllGlobals();
+        fetchSpy.mockRestore();
+        harness.restore();
       }
     });
   });

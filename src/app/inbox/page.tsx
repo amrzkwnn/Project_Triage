@@ -32,7 +32,13 @@ import { canShowAskFamily, shareItemWithFamily } from '@/lib/actions/sharing';
 import { analyze } from '@/lib/ai/engine';
 import { isDuplicateEvent } from '@/lib/calendar/snap';
 import { availableForwardActions } from '@/lib/inbox/events';
-import { syncEmailsFromRelay } from '@/lib/inbox/emailClient';
+import {
+  readEmailCheckStatus,
+  saveEmailCheckStatus,
+  syncEmailsFromRelay,
+  type EmailCheckStatusSnapshot,
+  type EmailProvider,
+} from '@/lib/inbox/emailClient';
 import { filterByTab, filterPromotions } from '@/lib/inbox/order';
 import { normalizeSource, parseIngestQuery } from '@/lib/inbox/parse';
 import { createPrescriptionItem } from '@/lib/inbox/prescription';
@@ -48,7 +54,7 @@ import {
   type Settings,
 } from '@/lib/types';
 import { CHANNEL_LABELS, admit } from '@/lib/vault/consent';
-import type { Vault } from '@/lib/vault/schema';
+import type { OAuthTokenRecord, Vault } from '@/lib/vault/schema';
 import { setChannelToggle } from '@/lib/vault/settings';
 import { createVault } from '@/lib/vault/store';
 
@@ -186,6 +192,33 @@ function bytesToBase64(bytes: Uint8Array): string {
     binary += String.fromCharCode(bytes[i]);
   }
   return typeof btoa === 'function' ? btoa(binary) : '';
+}
+
+function findValidCloudAccount(
+  records: readonly OAuthTokenRecord[]
+): OAuthTokenRecord | undefined {
+  return records.find(
+    (rec) =>
+      (rec.provider === 'Gmail' || rec.provider === 'Outlook') &&
+      typeof rec.token === 'string' &&
+      rec.token.trim().length > 0 &&
+      rec.token.trim() !== 'readonly-session'
+  );
+}
+
+function formatCheckedTime(iso: string): string {
+  const parsed = new Date(iso);
+  if (Number.isNaN(parsed.getTime())) {
+    return iso;
+  }
+  try {
+    return parsed.toLocaleTimeString([], {
+      hour: 'numeric',
+      minute: '2-digit',
+    });
+  } catch {
+    return iso;
+  }
 }
 
 export async function ingestInboxDraftWithConsent(params: {
@@ -452,6 +485,29 @@ export function UnifiedInboxPage({
   const [initialLoadDone, setInitialLoadDone] = React.useState<boolean>(
     !needsInitialLoad
   );
+  const [emailAccount, setEmailAccount] = React.useState<
+    OAuthTokenRecord | undefined
+  >(undefined);
+  const [lastCheckStatus, setLastCheckStatus] = React.useState<
+    EmailCheckStatusSnapshot | undefined
+  >(() => readEmailCheckStatus());
+  const [emailConnectionState, setEmailConnectionState] = React.useState<
+    'disconnected' | 'connected' | 'expired' | 'error'
+  >(() => {
+    if (initialReconnectMessage) return 'expired';
+    const snap = readEmailCheckStatus();
+    if (snap?.status === 'expired') return 'expired';
+    if (snap?.status === 'error') return 'error';
+    if (
+      snap?.status === 'ok' &&
+      snap.account &&
+      snap.provider &&
+      (initialSettings?.channels.email ?? false)
+    ) {
+      return 'connected';
+    }
+    return 'disconnected';
+  });
   const autoCheckedEmailRef = React.useRef<boolean>(false);
 
   const resolvedVault = React.useMemo(
@@ -483,12 +539,46 @@ export function UnifiedInboxPage({
 
       setIsCheckingEmails(true);
       try {
+        let activeAccount = emailAccount;
+        if (
+          !activeAccount &&
+          typeof resolvedVault.listOAuthTokens === 'function'
+        ) {
+          const tokensRes = await resolvedVault.listOAuthTokens();
+          if (tokensRes.ok) {
+            activeAccount = findValidCloudAccount(tokensRes.value);
+            setEmailAccount(activeAccount);
+          }
+        }
+
+        const activeProvider: EmailProvider | undefined =
+          activeAccount?.provider === 'Gmail' ||
+          activeAccount?.provider === 'Outlook'
+            ? activeAccount.provider
+            : undefined;
+
         const res = await syncEmailsFromRelay({
           vault: resolvedVault,
           settings: currentSettings,
         });
+        const nowIso = new Date().toISOString();
+
         if (!res.ok) {
-          if (!options?.silentOnError) {
+          const snapshot: EmailCheckStatusSnapshot = {
+            ...(activeAccount ? { account: activeAccount.account } : {}),
+            ...(activeProvider ? { provider: activeProvider } : {}),
+            checkedAtIso: nowIso,
+            checkedCount: 0,
+            newCount: 0,
+            status: 'error',
+            message: res.errorMessage,
+          };
+          saveEmailCheckStatus(snapshot);
+          setLastCheckStatus(snapshot);
+          if (activeAccount) {
+            setEmailConnectionState('error');
+          }
+          if (!options?.silentOnError || Boolean(activeAccount)) {
             setActionError(res.errorMessage);
             setStatusMessage(res.errorMessage);
           }
@@ -497,12 +587,38 @@ export function UnifiedInboxPage({
 
         if (res.reconnectRequired) {
           const nextReconnectMessage = res.reconnectMessage ?? res.message;
+          const snapshot: EmailCheckStatusSnapshot = {
+            ...(activeAccount ? { account: activeAccount.account } : {}),
+            ...(activeProvider ? { provider: activeProvider } : {}),
+            checkedAtIso: nowIso,
+            checkedCount: res.checkedCount,
+            newCount: 0,
+            status: 'expired',
+            message: nextReconnectMessage,
+          };
+          saveEmailCheckStatus(snapshot);
+          setLastCheckStatus(snapshot);
+          setEmailConnectionState('expired');
           setReconnectMessage(nextReconnectMessage);
           setStatusMessage(nextReconnectMessage);
           return;
         }
 
         setReconnectMessage(undefined);
+        setActionError(undefined);
+        setEmailConnectionState(activeAccount ? 'connected' : 'disconnected');
+
+        const snapshot: EmailCheckStatusSnapshot = {
+          ...(activeAccount ? { account: activeAccount.account } : {}),
+          ...(activeProvider ? { provider: activeProvider } : {}),
+          checkedAtIso: nowIso,
+          checkedCount: res.checkedCount,
+          newCount: res.stored.length,
+          status: 'ok',
+          message: res.message,
+        };
+        saveEmailCheckStatus(snapshot);
+        setLastCheckStatus(snapshot);
 
         if (res.stored.length > 0) {
           const newIds = new Set(res.stored.map((item) => item.id));
@@ -518,7 +634,7 @@ export function UnifiedInboxPage({
         setIsCheckingEmails(false);
       }
     },
-    [resolvedVault]
+    [resolvedVault, emailAccount]
   );
 
   const handleCheckNewEmails = async () => {
@@ -533,10 +649,16 @@ export function UnifiedInboxPage({
       return;
     }
     try {
-      const [settingsRes, itemsRes, eventsRes] = await Promise.all([
+      const [settingsRes, itemsRes, eventsRes, tokensRes] = await Promise.all([
         resolvedVault.getSettings(),
         resolvedVault.listItems(),
         resolvedVault.listEvents(),
+        typeof resolvedVault.listOAuthTokens === 'function'
+          ? resolvedVault.listOAuthTokens()
+          : Promise.resolve({
+              ok: true as const,
+              value: [] as OAuthTokenRecord[],
+            }),
       ]);
       if (settingsRes.ok) {
         setSettings(settingsRes.value);
@@ -547,10 +669,37 @@ export function UnifiedInboxPage({
       if (eventsRes.ok) {
         setExistingEvents(eventsRes.value);
       }
+      const hydratedStatus = readEmailCheckStatus();
+      setLastCheckStatus(hydratedStatus);
+
+      if (tokensRes.ok) {
+        for (const rec of tokensRes.value) {
+          const trimmed = typeof rec.token === 'string' ? rec.token.trim() : '';
+          if (trimmed.length === 0 || trimmed === 'readonly-session') {
+            await resolvedVault.deleteOAuthToken?.(rec.id);
+          }
+        }
+        const validAccount = findValidCloudAccount(tokensRes.value);
+        setEmailAccount(validAccount);
+        if (!validAccount) {
+          setEmailConnectionState(
+            initialReconnectMessage ? 'expired' : 'disconnected'
+          );
+        } else if (hydratedStatus?.status === 'expired') {
+          setEmailConnectionState('expired');
+        } else if (hydratedStatus?.status === 'error') {
+          setEmailConnectionState('error');
+        } else if (
+          hydratedStatus?.status === 'ok' &&
+          hydratedStatus.account === validAccount.account
+        ) {
+          setEmailConnectionState('connected');
+        }
+      }
     } finally {
       setInitialLoadDone(true);
     }
-  }, [resolvedVault]);
+  }, [resolvedVault, initialReconnectMessage]);
 
   React.useEffect(() => {
     if (needsInitialLoad) {
@@ -845,16 +994,121 @@ export function UnifiedInboxPage({
           </SeniorButton>
           <SeniorButton
             variant="secondary"
-            icon={<RefreshCw size={20} />}
+            icon={
+              <RefreshCw
+                size={20}
+                className={isCheckingEmails ? 'animate-spin' : undefined}
+              />
+            }
             disabled={isCheckingEmails}
             onClick={() => void handleCheckNewEmails()}
           >
-            Check for New Emails
+            {isCheckingEmails ? 'Checking Emails...' : 'Check for New Emails'}
           </SeniorButton>
         </div>
       </section>
 
       <StatusLive message={statusMessage} />
+
+      {/* Live Email Connection & Last-Checked Status Card */}
+      {(() => {
+        const displayAccount = emailAccount?.account ?? lastCheckStatus?.account;
+        const displayProvider =
+          emailAccount?.provider === 'Gmail' ||
+          emailAccount?.provider === 'Outlook'
+            ? emailAccount.provider
+            : lastCheckStatus?.provider;
+
+        return (
+          <section
+            aria-label="Email connection status"
+            data-card="true"
+            className="rounded-card border border-line bg-white p-4 shadow-card space-y-2.5"
+          >
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              {isCheckingEmails ? (
+                <span
+                  data-badge="true"
+                  className="inline-flex items-center gap-2 rounded-full border-2 border-brand-soft bg-brand-wash px-3.5 py-1.5 text-[16px] font-bold text-brand-deep shadow-pill"
+                >
+                  <span aria-hidden="true" className="inline-flex shrink-0">
+                    <RefreshCw size={16} className="animate-spin" />
+                  </span>
+                  <span>Checking Emails Now...</span>
+                </span>
+              ) : emailConnectionState === 'expired' ||
+                Boolean(reconnectMessage) ? (
+                <span
+                  data-badge="true"
+                  className="inline-flex items-center gap-2 rounded-full border-2 border-[#D97706] bg-amber-50 px-3.5 py-1.5 text-[16px] font-bold text-[#92400E] shadow-pill"
+                >
+                  <span aria-hidden="true" className="inline-flex shrink-0">
+                    <AlertTriangle size={16} />
+                  </span>
+                  <span>
+                    {displayAccount && displayProvider
+                      ? `Reconnect Needed (${displayProvider}): ${displayAccount}`
+                      : 'Reconnect Needed'}
+                  </span>
+                </span>
+              ) : emailConnectionState === 'connected' &&
+                displayAccount &&
+                displayProvider ? (
+                <span
+                  data-badge="true"
+                  className="inline-flex items-center gap-2 rounded-full border-2 border-emerald-200 bg-emerald-50 px-3.5 py-1.5 text-[16px] font-bold text-emerald-800 shadow-pill"
+                >
+                  <span aria-hidden="true" className="inline-flex shrink-0">
+                    <Check size={16} />
+                  </span>
+                  <span>
+                    {`Connected (${displayProvider}): ${displayAccount}`}
+                  </span>
+                </span>
+              ) : emailConnectionState === 'error' &&
+                displayAccount &&
+                displayProvider ? (
+                <span
+                  data-badge="true"
+                  className="inline-flex items-center gap-2 rounded-full border-2 border-[#BE123C] bg-red-50 px-3.5 py-1.5 text-[16px] font-bold text-[#881337] shadow-pill"
+                >
+                  <span aria-hidden="true" className="inline-flex shrink-0">
+                    <AlertTriangle size={16} />
+                  </span>
+                  <span>
+                    {`Could Not Check (${displayProvider}): ${displayAccount}`}
+                  </span>
+                </span>
+              ) : (
+                <span
+                  data-badge="true"
+                  className="inline-flex items-center gap-2 rounded-full border-2 border-line bg-canvas px-3.5 py-1.5 text-[16px] font-bold text-muted shadow-pill"
+                >
+                  <span aria-hidden="true" className="inline-flex shrink-0">
+                    <Mail size={16} />
+                  </span>
+                  <span>Email Not Connected</span>
+                </span>
+              )}
+            </div>
+
+            {lastCheckStatus ? (
+              <p className="text-[16px] text-muted tnum">
+                Last checked: {formatCheckedTime(lastCheckStatus.checkedAtIso)}{' '}
+                • {lastCheckStatus.checkedCount}{' '}
+                {lastCheckStatus.checkedCount === 1 ? 'email' : 'emails'}{' '}
+                checked, {lastCheckStatus.newCount} new
+              </p>
+            ) : (
+              <p className="text-[16px] text-muted">
+                {emailAccount
+                  ? 'Tap Check for New Emails above whenever you want a fresh look.'
+                  : 'Connect Gmail or Outlook in My Data to check emails automatically.'}
+              </p>
+            )}
+          </section>
+        );
+      })()}
 
       {/* Email reconnect prompt when connection expired/revoked */}
       {reconnectMessage ? (
