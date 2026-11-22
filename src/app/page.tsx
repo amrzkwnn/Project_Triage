@@ -382,7 +382,14 @@ export function HomeHub({
         vault: resolvedVault,
       });
       if (persistRes.ok) {
-        setSettings(persistRes.settings);
+        setSettings((prev) => ({
+          ...prev,
+          ...persistRes.settings,
+          ...(prev.shortcutSetupCompleted ||
+          persistRes.settings.shortcutSetupCompleted
+            ? { shortcutSetupCompleted: true }
+            : {}),
+        }));
       }
     }
     setStatusMessage(res.statusMessage);
@@ -403,7 +410,14 @@ export function HomeHub({
         setStatusMessage(persistRes.errorMessage);
         return;
       }
-      setSettings(persistRes.settings);
+      setSettings((prev) => ({
+        ...prev,
+        ...persistRes.settings,
+        ...(prev.shortcutSetupCompleted ||
+        persistRes.settings.shortcutSetupCompleted
+          ? { shortcutSetupCompleted: true }
+          : {}),
+      }));
     }
     setDismissedIds((prev) => new Set(prev).add(item.id));
     setItems((prev) => prev.filter((existing) => existing.id !== item.id));

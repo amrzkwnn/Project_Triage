@@ -333,6 +333,50 @@ describe('Task 1: Triage Rebrand, Undismissed-Only Local Persistence, Finish Set
         expect(cappedRes.settings.dismissedItemIds?.[499]).toBe('newest-501');
       }
     });
+
+    it('preserves BOTH dismissed IDs when two rapid dismissItemLocally calls fire with the same stale settings snapshot', async () => {
+      const vault = createVault({ dbName: 'test_triage_concurrent_dismiss_v1' });
+      const staleSettings: Settings = {
+        ...createDefaultSettings(),
+        channels: { ...createDefaultSettings().channels, email: true },
+      };
+      await vault.saveSettings(staleSettings);
+      await vault.putItem(makeInboxItem({ id: 'rapid-1', text: 'First item' }));
+      await vault.putItem(makeInboxItem({ id: 'rapid-2', text: 'Second item' }));
+      await vault.putItem(makeInboxItem({ id: 'rapid-keep', text: 'Keep item' }));
+
+      const [res1, res2] = await Promise.all([
+        dismissItemLocally({
+          itemId: 'rapid-1',
+          settings: staleSettings,
+          vault,
+        }),
+        dismissItemLocally({
+          itemId: 'rapid-2',
+          settings: staleSettings,
+          vault,
+        }),
+      ]);
+
+      expect(res1.ok).toBe(true);
+      expect(res2.ok).toBe(true);
+
+      const persistedSettings = await vault.getSettings();
+      expect(persistedSettings.ok).toBe(true);
+      if (persistedSettings.ok) {
+        expect(persistedSettings.value.dismissedItemIds).toEqual(
+          expect.arrayContaining(['rapid-1', 'rapid-2'])
+        );
+        expect(persistedSettings.value.dismissedItemIds).toHaveLength(2);
+        expect(persistedSettings.value.channels.email).toBe(true);
+      }
+
+      const persistedItems = await vault.listItems();
+      expect(persistedItems.ok).toBe(true);
+      if (persistedItems.ok) {
+        expect(persistedItems.value.map((i) => i.id)).toEqual(['rapid-keep']);
+      }
+    });
   });
 
   describe('UnifiedInboxPage Finish Setup Hide & Dismiss Persistence', () => {
@@ -383,7 +427,7 @@ describe('Task 1: Triage Rebrand, Undismissed-Only Local Persistence, Finish Set
         expect(wizard.props.completeLabel).toBe('Finish Setup');
 
         await (wizard.props.onComplete as () => Promise<void> | void)();
-        await Promise.resolve();
+        await new Promise((r) => setTimeout(r, 10));
 
         const tree2 = harness.render(() =>
           UnifiedInboxPage({
@@ -398,6 +442,53 @@ describe('Task 1: Triage Rebrand, Undismissed-Only Local Persistence, Finish Set
 
         const persisted = await vault.getSettings();
         expect(persisted.ok && persisted.value.shortcutSetupCompleted).toBe(true);
+      } finally {
+        harness.restore();
+      }
+    });
+
+    it('Finish Setup does not clobber recently persisted dismissedItemIds when invoked with stale render settings', async () => {
+      const vault = createVault({
+        dbName: 'test_triage_finish_setup_preserves_dismissed_v1',
+      });
+      const initialSettings = createDefaultSettings();
+      await vault.saveSettings(initialSettings);
+      const item = makeInboxItem({ id: 'dismiss-before-finish' });
+      await vault.putItem(item);
+
+      const harness = createHookHarness();
+      try {
+        // Render once with stale initialSettings, then fire Dismiss and Finish Setup without re-rendering
+        const tree = harness.render(() =>
+          UnifiedInboxPage({
+            initialSettings,
+            initialItems: [item],
+            initialEvents: [],
+            vault,
+          })
+        );
+        const dismissBtn = findElements(
+          tree,
+          (el) =>
+            el.type === SeniorButton &&
+            String(el.props.children).trim() === 'Dismiss'
+        )[0];
+        const wizard = findElements(tree, (el) => el.type === StepWizard)[0];
+        expect(dismissBtn).toBeDefined();
+        expect(wizard).toBeDefined();
+
+        (dismissBtn.props.onClick as () => void)();
+        (wizard.props.onComplete as () => void)();
+        await new Promise((r) => setTimeout(r, 20));
+
+        const persisted = await vault.getSettings();
+        expect(persisted.ok).toBe(true);
+        if (persisted.ok) {
+          expect(persisted.value.shortcutSetupCompleted).toBe(true);
+          expect(persisted.value.dismissedItemIds).toContain(
+            'dismiss-before-finish'
+          );
+        }
       } finally {
         harness.restore();
       }
@@ -439,7 +530,7 @@ describe('Task 1: Triage Rebrand, Undismissed-Only Local Persistence, Finish Set
         expect(dismissBtn).toBeDefined();
 
         await (dismissBtn.props.onClick as () => Promise<void>)();
-        await Promise.resolve();
+        await new Promise((r) => setTimeout(r, 10));
 
         const itemsAfter = await vault.listItems();
         expect(itemsAfter.ok && itemsAfter.value).toEqual([]);

@@ -45,6 +45,7 @@ import { filterByTab, filterPromotions } from '@/lib/inbox/order';
 import { normalizeSource, parseIngestQuery } from '@/lib/inbox/parse';
 import { createPrescriptionItem } from '@/lib/inbox/prescription';
 import {
+  completeShortcutSetupLocally,
   dismissItemLocally,
   useAutoEmailCheck,
 } from '@/lib/inbox/useAutoEmailCheck';
@@ -1026,25 +1027,37 @@ export function UnifiedInboxPage({
       return;
     }
 
-    setSettings(res.settings);
+    setSettings((prev) => ({
+      ...prev,
+      ...res.settings,
+      ...(prev.shortcutSetupCompleted || res.settings.shortcutSetupCompleted
+        ? { shortcutSetupCompleted: true }
+        : {}),
+    }));
     setItems((prev) => prev.filter((existing) => existing.id !== item.id));
     setStatusMessage('Message dismissed and removed from this device.');
   };
 
   const handleCompleteShortcutSetup = async () => {
-    const nextSettings: Settings = {
-      ...settings,
+    setSettings((prev) => ({
+      ...prev,
       shortcutSetupCompleted: true,
-    };
-    setSettings(nextSettings);
+    }));
     setStatusMessage('Phone shortcut guide completed.');
-    if (resolvedVault) {
-      const res = await resolvedVault.saveSettings(nextSettings);
-      if (!res.ok) {
-        setActionError(res.error.message);
-        setStatusMessage(res.error.message);
-      }
+    const res = await completeShortcutSetupLocally({
+      settings,
+      vault: resolvedVault,
+    });
+    if (!res.ok) {
+      setActionError(res.errorMessage);
+      setStatusMessage(res.errorMessage);
+      return;
     }
+    setSettings((prev) => ({
+      ...prev,
+      ...res.settings,
+      shortcutSetupCompleted: true,
+    }));
   };
 
   return (
