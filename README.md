@@ -43,21 +43,3 @@ A calm, senior-friendly mobile web app (PWA) designed to help older adults revie
 ### 8. My Data & Privacy Controls
 - **Explicit Consent & Audit Log:** Turn each message source, **AI Reading**, and **Family Sharing** ON or OFF anytime; inspect a transparent **"What AI Read"** log; download a local backup; or erase all data with two-step confirmation.
 
----
-
-## Local Development
-
-```bash
-npm install
-npx vite --host localhost --port 5173
-```
-
-Optional `.env.local` (kept local and gitignored):
-- `VITE_GOOGLE_CLIENT_ID` — Google OAuth client ID for read-only Gmail sign-in
-- `VITE_MICROSOFT_CLIENT_ID` — Microsoft OAuth client ID for read-only Outlook sign-in
-- `GEMINI_API_KEY` — Server-side Google Gemini API key for AI summaries, categorization, scam checking, vision media checks, and calendar planning
-
-Run tests:
-```bash
-npm test
-```
