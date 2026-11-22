@@ -6,7 +6,6 @@ import {
   Calendar,
   Camera,
   Check,
-  ChevronDown,
   Inbox,
   RefreshCw,
   ScanEye,
@@ -34,6 +33,9 @@ import {
   selectHomeDecisions,
 } from '@/lib/home/decisions';
 import { inferCalendarCategory } from '@/lib/calendar/categories';
+import { getVisibleInboxCategories } from '@/lib/inbox/categories';
+import { saveItemToCategoryLocally } from '@/lib/inbox/itemActions';
+import { parseSenderDisplay } from '@/lib/inbox/sender';
 import { syncEmailsFromRelay } from '@/lib/inbox/emailClient';
 import {
   dismissItemLocally,
@@ -238,7 +240,7 @@ export function HomeHub({
   initialSettings,
   initialItems,
   initialLoadError,
-  initialShowAll = false,
+  initialShowAll: _initialShowAll = false,
   vault,
   onNavigate,
   onConfirmDecision,
@@ -256,7 +258,9 @@ export function HomeHub({
   const [loadError, setLoadError] = React.useState<string | undefined>(
     initialLoadError
   );
-  const [showAll, setShowAll] = React.useState<boolean>(initialShowAll);
+  const [handledIds, setHandledIds] = React.useState<ReadonlySet<string>>(
+    () => new Set()
+  );
   const [statusMessage, setStatusMessage] = React.useState<string>('');
   const [actionError, setActionError] = React.useState<string | undefined>(
     undefined
@@ -320,14 +324,24 @@ export function HomeHub({
     () =>
       items.filter(
         (item) =>
-          !dismissedIds.has(item.id) && !persistedDismissedIds.has(item.id)
+          item.homeHandled !== true &&
+          !handledIds.has(item.id) &&
+          !dismissedIds.has(item.id) &&
+          !persistedDismissedIds.has(item.id)
       ),
-    [items, dismissedIds, persistedDismissedIds]
+    [items, handledIds, dismissedIds, persistedDismissedIds]
   );
 
   const selection = React.useMemo(
-    () => selectHomeDecisions(activeItems, showAll),
-    [activeItems, showAll]
+    () => selectHomeDecisions(activeItems, true),
+    [activeItems]
+  );
+
+  const currentDecision: InboxItem | undefined = selection.visible[0];
+
+  const saveCategories = React.useMemo(
+    () => getVisibleInboxCategories(settings).filter((c) => c !== 'All'),
+    [settings]
   );
 
   const handleLinkClick = (
@@ -357,6 +371,7 @@ export function HomeHub({
     if (onConfirmDecision) {
       onConfirmDecision(item, confirmation);
       setDismissedIds((prev) => new Set(prev).add(item.id));
+      setPendingFamilyItem(undefined);
       setStatusMessage('Your decision was confirmed.');
       return;
     }
@@ -375,26 +390,55 @@ export function HomeHub({
       return;
     }
 
-    setDismissedIds((prev) => new Set(prev).add(item.id));
-    setItems((prev) => prev.filter((existing) => existing.id !== item.id));
     if (resolvedVault) {
       const persistRes = await dismissItemLocally({
         itemId: item.id,
         settings,
         vault: resolvedVault,
       });
-      if (persistRes.ok) {
-        setSettings((prev) => ({
-          ...prev,
-          ...persistRes.settings,
-          ...(prev.shortcutSetupCompleted ||
-          persistRes.settings.shortcutSetupCompleted
-            ? { shortcutSetupCompleted: true }
-            : {}),
-        }));
+      if (!persistRes.ok) {
+        setActionError(persistRes.errorMessage);
+        setStatusMessage(persistRes.errorMessage);
+        return;
       }
+      setSettings((prev) => ({
+        ...prev,
+        ...persistRes.settings,
+        ...(prev.shortcutSetupCompleted ||
+        persistRes.settings.shortcutSetupCompleted
+          ? { shortcutSetupCompleted: true }
+          : {}),
+      }));
     }
+    setDismissedIds((prev) => new Set(prev).add(item.id));
+    setItems((prev) => prev.filter((existing) => existing.id !== item.id));
+    setPendingFamilyItem(undefined);
     setStatusMessage(res.statusMessage);
+  };
+
+  const handleSaveToCategory = async (item: InboxItem, category: string) => {
+    setActionError(undefined);
+    const res = await saveItemToCategoryLocally({
+      item,
+      category,
+      markHomeHandled: true,
+      vault: resolvedVault,
+    });
+    if (!res.ok) {
+      setActionError(res.errorMessage);
+      setStatusMessage(res.errorMessage);
+      return;
+    }
+    setItems((prev) =>
+      prev.map((existing) => (existing.id === item.id ? res.item : existing))
+    );
+    setHandledIds((prev) => new Set(prev).add(item.id));
+    setPendingFamilyItem(undefined);
+    setStatusMessage(
+      selection.totalAwaiting > 1
+        ? `Saved to ${category}. Showing your next message.`
+        : `Saved to ${category}. You are all caught up.`
+    );
   };
 
   const handleDismiss = async (item: InboxItem) => {
@@ -460,6 +504,23 @@ export function HomeHub({
       return;
     }
 
+    const handledRes = await saveItemToCategoryLocally({
+      item,
+      category: item.group,
+      markHomeHandled: true,
+      vault: resolvedVault,
+    });
+    if (!handledRes.ok) {
+      setActionError(handledRes.errorMessage);
+      setStatusMessage(handledRes.errorMessage);
+      return;
+    }
+    setItems((prev) =>
+      prev.map((existing) =>
+        existing.id === item.id ? handledRes.item : existing
+      )
+    );
+    setHandledIds((prev) => new Set(prev).add(item.id));
     setPendingFamilyItem(undefined);
     setStatusMessage(res.statusMessage);
   };
@@ -580,30 +641,46 @@ export function HomeHub({
             </p>
           </div>
         ) : (
-          <div className="space-y-4">
-            {selection.visible.map((item) => {
+          currentDecision ? (
+            (() => {
+              const item = currentDecision;
               const summaryText =
                 item.summary?.text ?? item.text.slice(0, 200);
-              const titleText =
-                item.summary?.whoSent ?? item.sender ?? 'Message awaiting review';
+              const senderDisplay = parseSenderDisplay(
+                item.sender,
+                item.summary?.whoSent,
+                item.senderEmail
+              );
               const actionId = item.proposals?.[0]?.id ?? `decision-${item.id}`;
-              const confirmLabel =
-                item.proposals?.[0]?.label ?? 'Confirm';
+              const confirmLabel = item.proposals?.[0]?.label ?? 'Confirm';
               const offerEnableSharing = shouldOfferEnableSharing(
                 settings,
                 item.tier
               );
+              const dotCount = Math.min(selection.totalAwaiting, 5);
 
               return (
                 <div key={item.id} className="space-y-3">
+                  <p
+                    data-home-queue-progress="true"
+                    className="text-[16px] font-semibold text-muted tnum"
+                  >
+                    1 of {selection.totalAwaiting} waiting • Take an action to see the next message
+                  </p>
                   <DecisionConfirmCard
                     actionId={actionId}
                     tier={item.tier}
-                    title={titleText}
+                    title={senderDisplay.displayName}
+                    senderEmail={senderDisplay.emailAddress}
                     summary={summaryText}
                     source={item.source}
                     priority={item.priority}
                     confirmLabel={confirmLabel}
+                    saveCategories={saveCategories}
+                    currentCategory={item.group}
+                    onSaveToCategory={(cat) =>
+                      void handleSaveToCategory(item, cat)
+                    }
                     onConfirm={(confirmation) =>
                       void handleConfirm(item, confirmation)
                     }
@@ -650,42 +727,24 @@ export function HomeHub({
                       </div>
                     </div>
                   ) : null}
+
+                  <div
+                    aria-hidden="true"
+                    className="mt-2 flex items-center justify-center gap-1.5"
+                  >
+                    {Array.from({ length: dotCount }, (_, idx) => (
+                      <span
+                        key={idx}
+                        className={`h-[6px] rounded-full transition-all duration-200 ${
+                          idx === 0 ? 'w-5 bg-red-500' : 'w-[6px] bg-line'
+                        }`}
+                      />
+                    ))}
+                  </div>
                 </div>
               );
-            })}
-
-            {/* Syed carousel dot indicator bar */}
-            <div
-              aria-hidden="true"
-              className="mt-2 flex items-center justify-center gap-1.5"
-            >
-              {selection.visible.map((item, idx) => (
-                <span
-                  key={item.id}
-                  className={`h-[6px] rounded-full transition-all duration-200 ${
-                    idx === 0 ? 'w-5 bg-red-500' : 'w-[6px] bg-line'
-                  }`}
-                />
-              ))}
-            </div>
-
-            {selection.hasMore ? (
-              <div>
-                <SeniorButton
-                  variant="secondary"
-                  icon={<ChevronDown size={20} />}
-                  onClick={() => {
-                    setShowAll(true);
-                    setStatusMessage(
-                      `Showing all ${selection.totalAwaiting} decisions.`
-                    );
-                  }}
-                >
-                  Show {selection.remainingCount} more decisions
-                </SeniorButton>
-              </div>
-            ) : null}
-          </div>
+            })()
+          ) : null
         )}
       </section>
 

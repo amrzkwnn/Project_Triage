@@ -363,9 +363,11 @@ describe('PWA Manifest, App Shell, Home Hub, and My Data Screen', () => {
     const cappedHtml = renderToStaticMarkup(
       <HomeHub initialSettings={createDefaultSettings()} initialItems={sevenItems} />
     );
-    // Tier 3 item (index 6) appears first, and 2 items remain behind reveal control
+    // Tier 3 item (index 6) appears first; Home shows one decision at a time
     expect(cappedHtml).toContain('Decision summary number 6');
-    expect(cappedHtml).toContain('Show 2 more');
+    expect(cappedHtml).toContain('1 of 7');
+    expect(cappedHtml).not.toContain('Decision summary number 0');
+    expect(cappedHtml).not.toContain('Show 2 more');
 
     const errorHtml = renderToStaticMarkup(
       <HomeHub

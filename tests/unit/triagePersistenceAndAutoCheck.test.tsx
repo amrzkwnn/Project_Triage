@@ -565,10 +565,24 @@ describe('Task 1: Triage Rebrand, Undismissed-Only Local Persistence, Finish Set
           tree1,
           (el) => el.type === DecisionConfirmCard
         );
-        expect(cards).toHaveLength(2);
+        expect(cards).toHaveLength(1);
 
         await (cards[0].props.onDismiss as () => Promise<void> | void)();
         await new Promise((r) => setTimeout(r, 10));
+
+        const tree2 = harness.render(() =>
+          HomeHub({
+            initialSettings: settings,
+            initialItems: [itemA, itemB],
+            vault,
+          })
+        );
+        const cardsAfter = findElements(
+          tree2,
+          (el) => el.type === DecisionConfirmCard
+        );
+        expect(cardsAfter).toHaveLength(1);
+        expect(String(cardsAfter[0].props.actionId)).toContain('home-b');
 
         const itemsAfter = await vault.listItems();
         expect(itemsAfter.ok).toBe(true);
