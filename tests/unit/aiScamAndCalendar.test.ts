@@ -19,6 +19,7 @@ import {
   createGeminiAiProvider,
   createGeminiCalendarPlanner,
   createGeminiScamChecker,
+  didGeminiPlannerFail,
   isDefaultGeminiCalendarPlanner,
   isDefaultGeminiScamChecker,
 } from '@/lib/server/geminiProvider';
@@ -992,18 +993,18 @@ describe('Task 4: AI-Powered Calendar Automatic Planning (/api/calendar-plan & C
       });
     });
 
-    it('returns [] without throwing on HTTP 500, invalid JSON, or network error, and honors GEMINI_MODEL env override', async () => {
+    it('returns [] without throwing on HTTP 500, invalid JSON, or network error, tags failures for didGeminiPlannerFail, and honors GEMINI_MODEL env override', async () => {
       const http500 = createGeminiCalendarPlanner({
         fetchFn: vi.fn(
           async () => new Response('Server error secret-key', { status: 500 })
         ),
       });
-      expect(
-        await http500(
-          { items: [{ text: 'Lunch tomorrow at noon' }], todayIso: '2026-11-22' },
-          'secret-key'
-        )
-      ).toEqual([]);
+      const http500Res = await http500(
+        { items: [{ text: 'Lunch tomorrow at noon' }], todayIso: '2026-11-22' },
+        'secret-key'
+      );
+      expect(http500Res).toEqual([]);
+      expect(didGeminiPlannerFail(http500Res)).toBe(true);
 
       const badJson = createGeminiCalendarPlanner({
         fetchFn: vi.fn(
@@ -1016,24 +1017,24 @@ describe('Task 4: AI-Powered Calendar Automatic Planning (/api/calendar-plan & C
             )
         ),
       });
-      expect(
-        await badJson(
-          { items: [{ text: 'Lunch tomorrow at noon' }], todayIso: '2026-11-22' },
-          'secret-key'
-        )
-      ).toEqual([]);
+      const badJsonRes = await badJson(
+        { items: [{ text: 'Lunch tomorrow at noon' }], todayIso: '2026-11-22' },
+        'secret-key'
+      );
+      expect(badJsonRes).toEqual([]);
+      expect(didGeminiPlannerFail(badJsonRes)).toBe(true);
 
       const networkErr = createGeminiCalendarPlanner({
         fetchFn: vi.fn(async () => {
           throw new Error('Network failure');
         }),
       });
-      expect(
-        await networkErr(
-          { items: [{ text: 'Lunch tomorrow at noon' }], todayIso: '2026-11-22' },
-          'secret-key'
-        )
-      ).toEqual([]);
+      const networkErrRes = await networkErr(
+        { items: [{ text: 'Lunch tomorrow at noon' }], todayIso: '2026-11-22' },
+        'secret-key'
+      );
+      expect(networkErrRes).toEqual([]);
+      expect(didGeminiPlannerFail(networkErrRes)).toBe(true);
 
       const urls: string[] = [];
       const envOverridePlanner = createGeminiCalendarPlanner({
@@ -1050,10 +1051,12 @@ describe('Task 4: AI-Powered Calendar Automatic Planning (/api/calendar-plan & C
         }),
       });
       getProcessEnv().GEMINI_MODEL = 'gemini-2.5-pro';
-      await envOverridePlanner(
+      const emptyValidRes = await envOverridePlanner(
         { items: [{ text: 'Checkup tomorrow at 9am' }], todayIso: '2026-11-22' },
         'secret-key'
       );
+      expect(emptyValidRes).toEqual([]);
+      expect(didGeminiPlannerFail(emptyValidRes)).toBe(false);
       expect(urls[0]).toBe(
         'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent'
       );
@@ -1275,6 +1278,138 @@ describe('Task 4: AI-Powered Calendar Automatic Planning (/api/calendar-plan & C
       for (const line of logs) {
         expect(line).not.toContain('CAL_LEAK_GUARD_99');
       }
+    });
+
+    it('returns source: device (not ai) when Gemini fails silently on natural-language items with empty baseline, and source: ai on genuine empty AI response', async () => {
+      const failingPlanner = createGeminiCalendarPlanner({
+        fetchFn: vi.fn(async () => new Response('Upstream error', { status: 500 })),
+      });
+      const failingHandler = createCalendarPlanPostHandler({
+        tokenRegistry: new TokenRegistry(),
+        rateLimiter: createRateLimiter(),
+        logger: createSafeLogger(() => {}),
+        now: () => 1_750_000_000_000,
+        env: { GEMINI_API_KEY: 'KEY_SILENT_FAIL' },
+        calendarPlanner: failingPlanner,
+      });
+
+      const failRes = await failingHandler(
+        new Request('http://localhost:5173/api/calendar-plan', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${DEFAULT_DEV_TOKEN}`,
+          },
+          body: JSON.stringify({
+            items: [{ text: 'Dentist next Tuesday at 2:30 PM at Smile Clinic' }],
+            todayIso: '2026-11-22',
+          }),
+        })
+      );
+      expect(failRes.status).toBe(200);
+      const failBody = (await failRes.json()) as {
+        candidates: Candidate[];
+        source: 'ai' | 'device';
+      };
+      expect(failBody.candidates).toEqual([]);
+      expect(failBody.source).toBe('device');
+
+      const emptySuccessPlanner = createGeminiCalendarPlanner({
+        fetchFn: vi.fn(
+          async () =>
+            new Response(
+              JSON.stringify({
+                candidates: [
+                  { content: { parts: [{ text: '{"candidates":[]}' }] } },
+                ],
+              }),
+              { status: 200, headers: { 'Content-Type': 'application/json' } }
+            )
+        ),
+      });
+      const emptySuccessHandler = createCalendarPlanPostHandler({
+        tokenRegistry: new TokenRegistry(),
+        rateLimiter: createRateLimiter(),
+        logger: createSafeLogger(() => {}),
+        now: () => 1_750_000_000_000,
+        env: { GEMINI_API_KEY: 'KEY_EMPTY_OK' },
+        calendarPlanner: emptySuccessPlanner,
+      });
+
+      const emptyRes = await emptySuccessHandler(
+        new Request('http://localhost:5173/api/calendar-plan', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${DEFAULT_DEV_TOKEN}`,
+          },
+          body: JSON.stringify({
+            items: [{ text: 'Just saying hello, hope you are well!' }],
+            todayIso: '2026-11-22',
+          }),
+        })
+      );
+      expect(emptyRes.status).toBe(200);
+      const emptyBody = (await emptyRes.json()) as {
+        candidates: Candidate[];
+        source: 'ai' | 'device';
+      };
+      expect(emptyBody.candidates).toEqual([]);
+      expect(emptyBody.source).toBe('ai');
+    });
+
+    it('deduplicates same-slot AI and deterministic baseline candidates when one normalized title contains the other', async () => {
+      const handler = createCalendarPlanPostHandler({
+        tokenRegistry: new TokenRegistry(),
+        rateLimiter: createRateLimiter(),
+        logger: createSafeLogger(() => {}),
+        now: () => 1_750_000_000_000,
+        env: { GEMINI_API_KEY: 'KEY_MERGE_DEDUP' },
+        calendarPlanner: async () => [
+          {
+            id: 'ai-slot-1',
+            title: 'Dentist Visit',
+            date: '2026-11-24',
+            time: '14:30',
+            location: 'Smile Clinic',
+            category: 'Medical',
+            confidence: 0.95,
+          },
+        ],
+      });
+
+      const res = await handler(
+        new Request('http://localhost:5173/api/calendar-plan', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${DEFAULT_DEV_TOKEN}`,
+          },
+          body: JSON.stringify({
+            items: [
+              {
+                text: '2026-11-24 14:30 Dentist Visit at Smile Clinic',
+              },
+            ],
+            todayIso: '2026-11-22',
+          }),
+        })
+      );
+
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as {
+        candidates: Candidate[];
+        source: 'ai' | 'device';
+      };
+      expect(body.source).toBe('ai');
+      expect(body.candidates).toHaveLength(1);
+      expect(body.candidates[0]).toMatchObject({
+        title: 'Dentist Visit',
+        date: '2026-11-24',
+        time: '14:30',
+        location: 'Smile Clinic',
+        category: 'Medical',
+      });
     });
 
     it('wires calendarPlanner in default runtime and dispatches POST /api/calendar-plan in viteApiPlugin', async () => {
@@ -1548,6 +1683,8 @@ describe('Task 4: AI-Powered Calendar Automatic Planning (/api/calendar-plan & C
           initialToday: '2026-11-22',
           initialPlanSource: 'device',
           initialSnapCandidates: [queuedCandidate],
+          initialQueueError:
+            'Please enter a valid date in YYYY-MM-DD format before keeping.',
         })
       );
 
@@ -1557,6 +1694,10 @@ describe('Task 4: AI-Powered Calendar Automatic Planning (/api/calendar-plan & C
       expect(offHtml).toContain('Keep on Calendar');
       expect(offHtml).toContain('Skip');
       expect(offHtml).toContain('Smile Clinic');
+      expect(offHtml).toContain('Photo Access is OFF');
+      expect(offHtml).toContain(
+        'Please enter a valid date in YYYY-MM-DD format before keeping.'
+      );
       expect(stripHtml(offHtml)).not.toMatch(BANNED_JARGON);
 
       const onHtml = renderToStaticMarkup(

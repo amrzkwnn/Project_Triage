@@ -22,6 +22,7 @@ import { normalizeTitle } from '@/lib/calendar/snap';
 import { buildClaritySummary } from '@/lib/ai/summary';
 import { checkText, type ScamCheckOutput } from '@/lib/scam/verdict';
 import { TokenRegistry } from '@/lib/server/auth';
+import { didGeminiPlannerFail } from '@/lib/server/geminiProvider';
 import { createRateLimiter, type RateLimiter } from '@/lib/server/rateLimit';
 import type { EncryptedRelayStore } from '@/lib/server/relay';
 import type { SafeLogger } from '@/lib/server/safeLog';
@@ -1186,6 +1187,20 @@ function deduplicatePlanCandidates(candidates: readonly Candidate[]): Candidate[
       continue;
     }
 
+    const overlapsExistingSlot = deduped.some((kept) => {
+      if (kept.date !== candidate.date || kept.time !== candidate.time) {
+        return false;
+      }
+      const keptNorm = normalizeTitle(kept.title);
+      if (keptNorm.length === 0 || normTitle.length === 0) {
+        return false;
+      }
+      return keptNorm.includes(normTitle) || normTitle.includes(keptNorm);
+    });
+    if (overlapsExistingSlot) {
+      continue;
+    }
+
     let uniqueId = candidate.id;
     let suffix = 2;
     while (usedIds.has(uniqueId)) {
@@ -1456,7 +1471,7 @@ export function createCalendarPlanPostHandler(
       if (apiKey && deps.calendarPlanner && items.length > 0) {
         try {
           const aiRaw = await deps.calendarPlanner({ items, todayIso }, apiKey);
-          if (Array.isArray(aiRaw)) {
+          if (Array.isArray(aiRaw) && !didGeminiPlannerFail(aiRaw)) {
             const sanitizedAi: Candidate[] = [];
             for (let i = 0; i < aiRaw.length; i += 1) {
               const sanitized = sanitizeCalendarCandidate(

@@ -155,6 +155,7 @@ export type CalendarPageProps = {
   initialView?: CalendarViewMode;
   initialSnapCandidates?: Candidate[];
   initialPlanSource?: 'ai' | 'device';
+  initialQueueError?: string;
   extractCalendarPhotoText?: (file: File) => Promise<string>;
   fetchFn?: typeof fetch;
   vault?: Vault;
@@ -169,6 +170,7 @@ export function CalendarPage({
   initialView = 'Today',
   initialSnapCandidates = [],
   initialPlanSource,
+  initialQueueError,
   extractCalendarPhotoText,
   fetchFn,
   vault,
@@ -233,6 +235,9 @@ export function CalendarPage({
   );
   const [snapInputText, setSnapInputText] = useState<string>('');
   const [snapError, setSnapError] = useState<string | undefined>(undefined);
+  const [queueError, setQueueError] = useState<string | undefined>(
+    initialQueueError
+  );
   const [snapQueue, setSnapQueue] = useState<Candidate[]>(
     initialSnapCandidates
   );
@@ -514,6 +519,7 @@ export function CalendarPage({
   const handleAutoPlanCalendar = async () => {
     setAutoPlanError(undefined);
     setAutoPlanMessage(undefined);
+    setQueueError(undefined);
 
     if (inboxItems.length === 0) {
       const msg =
@@ -570,6 +576,9 @@ export function CalendarPage({
     photoFileName?: string
   ) => {
     setSnapError(undefined);
+    setQueueError(undefined);
+    setAutoPlanError(undefined);
+    setAutoPlanMessage(undefined);
     const gate = admit(settings, { source: 'photos' });
     if (!gate.admit) {
       setSnapError(gate.message);
@@ -687,10 +696,11 @@ export function CalendarPage({
     if (!currentCandidate) return;
     const parsed = parsePlainDate(confirmDateInput);
     if (!parsed.ok) {
-      setSnapError(parsed.error.message);
+      setQueueError(parsed.error.message);
+      setStatusMessage(parsed.error.message);
       return;
     }
-    setSnapError(undefined);
+    setQueueError(undefined);
     setSnapQueue((prev) =>
       prev.map((c, idx) =>
         idx === 0 ? { ...c, date: confirmDateInput, dateConfirmed: true } : c
@@ -705,7 +715,7 @@ export function CalendarPage({
     decision: 'keep' | 'skip' | 'keep-both'
   ) => {
     if (!currentCandidate) return;
-    setSnapError(undefined);
+    setQueueError(undefined);
 
     const outcome = await applyCandidateDecisionWithPersistence({
       candidate: currentCandidate,
@@ -715,7 +725,7 @@ export function CalendarPage({
     });
 
     if (!outcome.ok) {
-      setSnapError(outcome.errorMessage);
+      setQueueError(outcome.errorMessage);
       setStatusMessage(outcome.errorMessage);
       return;
     }
@@ -1275,6 +1285,15 @@ export function CalendarPage({
               <p className="text-[18px] font-semibold text-[#92400E]">
                 A similar event already exists on {currentCandidate.date}. Would
                 you like to keep both or skip?
+              </p>
+            ) : null}
+
+            {queueError ? (
+              <p
+                role="alert"
+                className="text-[18px] font-semibold text-[#881337]"
+              >
+                {queueError}
               </p>
             ) : null}
 

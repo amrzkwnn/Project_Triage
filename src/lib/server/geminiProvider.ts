@@ -30,6 +30,30 @@ const DEFAULT_GEMINI_CALENDAR_PLANNER_SYMBOL = Symbol.for(
   'senior-companion.default-gemini-calendar-planner'
 );
 
+const GEMINI_PLANNER_FAILED_SYMBOL = Symbol.for(
+  'senior-companion.gemini-planner-failed'
+);
+
+function createFailedPlannerResult(): Candidate[] {
+  const empty: Candidate[] = [];
+  Object.defineProperty(empty, GEMINI_PLANNER_FAILED_SYMBOL, {
+    value: true,
+    enumerable: false,
+    configurable: false,
+    writable: false,
+  });
+  return empty;
+}
+
+export function didGeminiPlannerFail(result: unknown): boolean {
+  return (
+    Array.isArray(result) &&
+    (result as unknown as Record<symbol, unknown>)[
+      GEMINI_PLANNER_FAILED_SYMBOL
+    ] === true
+  );
+}
+
 const GEMINI_RESPONSE_SCHEMA = {
   type: 'OBJECT',
   properties: {
@@ -439,14 +463,12 @@ export function createGeminiCalendarPlanner(deps?: {
   const timeoutMs = deps?.timeoutMs ?? DEFAULT_GEMINI_TIMEOUT_MS;
 
   const planner: CalendarPlanAiProvider = async (params, apiKey) => {
-    const fetchFn = deps?.fetchFn ?? globalThis.fetch;
-    if (
-      typeof fetchFn !== 'function' ||
-      !apiKey ||
-      !Array.isArray(params.items) ||
-      params.items.length === 0
-    ) {
+    if (!Array.isArray(params.items) || params.items.length === 0) {
       return [];
+    }
+    const fetchFn = deps?.fetchFn ?? globalThis.fetch;
+    if (typeof fetchFn !== 'function' || !apiKey) {
+      return createFailedPlannerResult();
     }
 
     const model =
@@ -481,13 +503,13 @@ export function createGeminiCalendarPlanner(deps?: {
       });
 
       if (!response.ok) {
-        return [];
+        return createFailedPlannerResult();
       }
 
       const data = (await response.json()) as GeminiGenerateContentResponse;
       const rawText = data?.candidates?.[0]?.content?.parts?.[0]?.text;
       if (typeof rawText !== 'string' || rawText.trim().length === 0) {
-        return [];
+        return createFailedPlannerResult();
       }
 
       const parsed: unknown = JSON.parse(rawText);
@@ -498,7 +520,7 @@ export function createGeminiCalendarPlanner(deps?: {
           : null;
 
       if (!rawList) {
-        return [];
+        return createFailedPlannerResult();
       }
 
       const results: Candidate[] = [];
@@ -541,7 +563,7 @@ export function createGeminiCalendarPlanner(deps?: {
 
       return results;
     } catch {
-      return [];
+      return createFailedPlannerResult();
     } finally {
       clearTimeout(timer);
     }
