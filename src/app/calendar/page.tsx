@@ -14,6 +14,7 @@ import {
   Plus,
   Receipt,
   SkipForward,
+  Sparkles,
   Stethoscope,
   Sun,
   Trash2,
@@ -29,6 +30,7 @@ import { SeniorButton } from '@/components/SeniorButton';
 import { StatusLive } from '@/components/StatusLive';
 import { confirmFromTap } from '@/lib/actions/confirmation';
 import { execute } from '@/lib/actions/executor';
+import { autoPlanCalendarFromItems } from '@/lib/calendar/aiPlanClient';
 import {
   CALENDAR_CATEGORIES,
   getCategoryMeta,
@@ -50,6 +52,7 @@ import {
   createDefaultSettings,
   type CalendarCategory,
   type CalendarEvent,
+  type InboxItem,
   type ReminderLead,
   type Settings,
 } from '@/lib/types';
@@ -147,10 +150,13 @@ export async function applyCandidateDecisionWithPersistence(params: {
 export type CalendarPageProps = {
   initialSettings?: Settings;
   initialEvents?: CalendarEvent[];
+  initialInboxItems?: InboxItem[];
   initialToday?: string;
   initialView?: CalendarViewMode;
   initialSnapCandidates?: Candidate[];
+  initialPlanSource?: 'ai' | 'device';
   extractCalendarPhotoText?: (file: File) => Promise<string>;
+  fetchFn?: typeof fetch;
   vault?: Vault;
   onNavigate?: (href: string) => void;
 };
@@ -158,10 +164,13 @@ export type CalendarPageProps = {
 export function CalendarPage({
   initialSettings,
   initialEvents,
+  initialInboxItems,
   initialToday,
   initialView = 'Today',
   initialSnapCandidates = [],
+  initialPlanSource,
   extractCalendarPhotoText,
+  fetchFn,
   vault,
   onNavigate,
 }: CalendarPageProps) {
@@ -177,9 +186,24 @@ export function CalendarPage({
     initialSettings ?? createDefaultSettings()
   );
   const [events, setEvents] = useState<CalendarEvent[]>(initialEvents ?? []);
+  const [inboxItems, setInboxItems] = useState<InboxItem[]>(
+    initialInboxItems ?? []
+  );
   const [viewMode, setViewMode] = useState<CalendarViewMode>(initialView);
   const [selectedIsoDate, setSelectedIsoDate] = useState<string>(() =>
     todayDate.toString()
+  );
+
+  // Automatic Plan from Messages & Emails state
+  const [isAutoPlanning, setIsAutoPlanning] = useState<boolean>(false);
+  const [autoPlanSource, setAutoPlanSource] = useState<
+    'ai' | 'device' | undefined
+  >(initialPlanSource);
+  const [autoPlanMessage, setAutoPlanMessage] = useState<string | undefined>(
+    undefined
+  );
+  const [autoPlanError, setAutoPlanError] = useState<string | undefined>(
+    undefined
   );
 
   const selectedDate = useMemo(() => {
@@ -225,9 +249,10 @@ export function CalendarPage({
 
   const loadData = useCallback(async () => {
     if (!resolvedVault) return;
-    const [settingsRes, eventsRes] = await Promise.all([
+    const [settingsRes, eventsRes, itemsRes] = await Promise.all([
       resolvedVault.getSettings(),
       resolvedVault.listEvents(),
+      resolvedVault.listItems(),
     ]);
     if (settingsRes.ok) {
       setSettings(settingsRes.value);
@@ -235,13 +260,20 @@ export function CalendarPage({
     if (eventsRes.ok) {
       setEvents(eventsRes.value);
     }
+    if (itemsRes.ok) {
+      setInboxItems(itemsRes.value);
+    }
   }, [resolvedVault]);
 
   useEffect(() => {
-    if (initialSettings === undefined || initialEvents === undefined) {
+    if (
+      initialSettings === undefined ||
+      initialEvents === undefined ||
+      initialInboxItems === undefined
+    ) {
       void loadData();
     }
-  }, [initialSettings, initialEvents, loadData]);
+  }, [initialSettings, initialEvents, initialInboxItems, loadData]);
 
   const handleBack = (
     event: React.MouseEvent<HTMLAnchorElement | HTMLButtonElement>
@@ -463,6 +495,131 @@ export function CalendarPage({
     );
   };
 
+  const detectedEventCount = useMemo(
+    () =>
+      inboxItems.filter(
+        (item) =>
+          item.detectedEvent !== undefined &&
+          !isDuplicateEvent(
+            {
+              title: item.detectedEvent.title,
+              date: item.detectedEvent.date,
+            },
+            events
+          )
+      ).length,
+    [inboxItems, events]
+  );
+
+  const handleAutoPlanCalendar = async () => {
+    setAutoPlanError(undefined);
+    setAutoPlanMessage(undefined);
+
+    if (inboxItems.length === 0) {
+      const msg =
+        'No saved messages or emails were found yet. Save messages in your Inbox first, then scan here.';
+      setAutoPlanMessage(msg);
+      setStatusMessage(msg);
+      return;
+    }
+
+    const newestItems = [...inboxItems]
+      .sort((a, b) => b.receivedAt.localeCompare(a.receivedAt))
+      .slice(0, 15)
+      .map((item) => ({
+        id: item.id,
+        text: item.text,
+        sender: item.sender,
+        receivedAt: item.receivedAt,
+      }));
+
+    setIsAutoPlanning(true);
+    setStatusMessage('Scanning your messages and emails for upcoming plans...');
+
+    try {
+      const planRes = await autoPlanCalendarFromItems({
+        items: newestItems,
+        existingEvents: events,
+        todayIso: todayDate.toString(),
+        settings,
+        vault: resolvedVault,
+        fetchFn,
+      });
+
+      if (!planRes.ok) {
+        setAutoPlanError(planRes.message);
+        setStatusMessage(planRes.message);
+        return;
+      }
+
+      setAutoPlanSource(planRes.checkedBy);
+      setAutoPlanMessage(planRes.message);
+      setStatusMessage(planRes.message);
+
+      if (planRes.candidates.length > 0) {
+        setSnapQueue(planRes.candidates);
+        setConfirmDateInput(planRes.candidates[0]?.date ?? '');
+      }
+    } finally {
+      setIsAutoPlanning(false);
+    }
+  };
+
+  const handleExtractSnapCandidates = async (
+    rawText: string,
+    photoFileName?: string
+  ) => {
+    setSnapError(undefined);
+    const gate = admit(settings, { source: 'photos' });
+    if (!gate.admit) {
+      setSnapError(gate.message);
+      setStatusMessage(gate.message);
+      return;
+    }
+
+    if (settings.allowAiReading && rawText.trim().length > 0) {
+      setIsAutoPlanning(true);
+      try {
+        const aiRes = await autoPlanCalendarFromItems({
+          items: [{ text: rawText }],
+          existingEvents: events,
+          todayIso: todayDate.toString(),
+          settings,
+          vault: resolvedVault,
+          fetchFn,
+        });
+        if (aiRes.ok && aiRes.candidates.length > 0) {
+          setSnapQueue(aiRes.candidates);
+          setConfirmDateInput(aiRes.candidates[0]?.date ?? '');
+          setAutoPlanSource(aiRes.checkedBy);
+          setStatusMessage(
+            photoFileName
+              ? `Found ${aiRes.candidates.length} calendar item(s) from "${photoFileName}" to review one by one.`
+              : aiRes.message
+          );
+          return;
+        }
+      } finally {
+        setIsAutoPlanning(false);
+      }
+    }
+
+    const extracted = extractCalendarCandidatesFromText(rawText, 0.85);
+    if (!extracted.ok) {
+      setSnapError(extracted.error.message);
+      setStatusMessage(extracted.error.message);
+      return;
+    }
+    setSnapQueue(extracted.value);
+    setConfirmDateInput(extracted.value[0]?.date ?? '');
+    setAutoPlanSource('device');
+    setStatusMessage(
+      photoFileName
+        ? `Found ${extracted.value.length} calendar item(s) from "${photoFileName}" to review one by one.`
+        : `Found ${extracted.value.length} calendar item(s) to review one by one.`
+    );
+  };
+
   const handleSnapPhotoPick = async (
     event: React.ChangeEvent<HTMLInputElement>
   ) => {
@@ -495,17 +652,7 @@ export function CalendarPage({
       try {
         const extractedText = await extractCalendarPhotoText(file);
         setSnapInputText(extractedText);
-        const extracted = extractCalendarCandidatesFromText(extractedText, 0.85);
-        if (!extracted.ok) {
-          setSnapError(extracted.error.message);
-          setStatusMessage(extracted.error.message);
-          return;
-        }
-        setSnapQueue(extracted.value);
-        setConfirmDateInput(extracted.value[0]?.date ?? '');
-        setStatusMessage(
-          `Found ${extracted.value.length} calendar item(s) from "${file.name}" to review one by one.`
-        );
+        await handleExtractSnapCandidates(extractedText, file.name);
         return;
       } catch {
         const msg =
@@ -521,25 +668,8 @@ export function CalendarPage({
     );
   };
 
-  const handleParseSnapText = () => {
-    setSnapError(undefined);
-    const gate = admit(settings, { source: 'photos' });
-    if (!gate.admit) {
-      setSnapError(gate.message);
-      setStatusMessage(gate.message);
-      return;
-    }
-    const extracted = extractCalendarCandidatesFromText(snapInputText, 0.85);
-    if (!extracted.ok) {
-      setSnapError(extracted.error.message);
-      setStatusMessage(extracted.error.message);
-      return;
-    }
-    setSnapQueue(extracted.value);
-    setConfirmDateInput(extracted.value[0]?.date ?? '');
-    setStatusMessage(
-      `Found ${extracted.value.length} calendar item(s) to review one by one.`
-    );
+  const handleParseSnapText = async () => {
+    await handleExtractSnapCandidates(snapInputText);
   };
 
   const currentCandidate = snapQueue[0];
@@ -983,6 +1113,203 @@ export function CalendarPage({
         ) : null}
       </section>
 
+      {/* Automatic Plan from Messages & Emails */}
+      <section
+        aria-labelledby="auto-plan-heading"
+        data-card="true"
+        className="rounded-card border border-line bg-white p-5 shadow-card space-y-4"
+      >
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <h2
+            id="auto-plan-heading"
+            className="flex items-center gap-3 text-[22px] font-bold text-ink"
+          >
+            <span
+              aria-hidden="true"
+              className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-brand-wash text-brand"
+            >
+              <Sparkles size={22} />
+            </span>
+            <span>Automatic Plan from Messages &amp; Emails</span>
+          </h2>
+
+          {autoPlanSource ? (
+            <span
+              data-badge="true"
+              className={
+                autoPlanSource === 'ai'
+                  ? 'inline-flex items-center gap-2 rounded-full border-2 border-brand bg-brand-wash px-3.5 py-1.5 text-[15px] font-bold text-brand-deep shadow-pill'
+                  : 'inline-flex items-center gap-2 rounded-full border-2 border-line bg-canvas px-3.5 py-1.5 text-[15px] font-bold text-ink shadow-pill'
+              }
+            >
+              <span
+                aria-hidden="true"
+                className="inline-flex shrink-0 text-brand"
+              >
+                {autoPlanSource === 'ai' ? (
+                  <Sparkles size={18} />
+                ) : (
+                  <CalendarCheck size={18} />
+                )}
+              </span>
+              <span>
+                {autoPlanSource === 'ai'
+                  ? 'Planned with AI Helper'
+                  : 'Found on This Device'}
+              </span>
+            </span>
+          ) : null}
+        </div>
+
+        <p className="text-[16px] leading-relaxed text-muted">
+          {inboxItems.length > 0
+            ? `You have ${inboxItems.length} saved ${inboxItems.length === 1 ? 'message or email' : 'messages and emails'} ready to scan.${detectedEventCount > 0 ? ` ${detectedEventCount} possible ${detectedEventCount === 1 ? 'event is' : 'events are'} waiting for your review.` : ''} Every found plan asks for your approval first.`
+            : 'Save emails or messages in your Inbox, then tap below to find appointments and review them one by one before adding to your calendar.'}
+        </p>
+
+        <div className="flex flex-wrap gap-3">
+          <SeniorButton
+            variant="primary"
+            icon={<Sparkles size={20} />}
+            disabled={isAutoPlanning}
+            onClick={() => void handleAutoPlanCalendar()}
+          >
+            {isAutoPlanning
+              ? 'Auto-Planning Calendar...'
+              : 'Auto-Plan Calendar with AI'}
+          </SeniorButton>
+        </div>
+
+        {!settings.allowAiReading ? (
+          <p className="rounded-chip border border-line bg-canvas p-4 text-[16px] leading-relaxed text-muted">
+            Built-in device scan is ready now. Turn Allow AI Reading ON in My
+            Data to understand natural dates like &ldquo;next Tuesday at
+            3pm&rdquo;.
+          </p>
+        ) : null}
+
+        {autoPlanError ? (
+          <p role="alert" className="text-[18px] font-semibold text-[#881337]">
+            {autoPlanError}
+          </p>
+        ) : null}
+
+        {autoPlanMessage && !autoPlanError ? (
+          <p role="status" className="text-[16px] font-semibold text-brand-deep">
+            {autoPlanMessage}
+          </p>
+        ) : null}
+
+        {/* Human-in-the-loop 1-by-1 confirmation queue */}
+        {currentCandidate ? (
+          <div
+            role="region"
+            aria-label="Review suggested calendar event"
+            className="rounded-card border-2 border-brand-soft bg-brand-wash p-4 space-y-4"
+          >
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <p className="text-[18px] font-bold text-brand-deep tnum">
+                Reviewing 1 of {snapQueue.length} remaining
+              </p>
+              {currentCandidateNeedsCheck ? (
+                <span
+                  data-badge="true"
+                  className="inline-flex items-center gap-2 rounded-full border-2 border-[#D97706] bg-[#FFFBEB] px-3 py-1.5 text-[16px] font-bold text-[#92400E]"
+                >
+                  <span aria-hidden="true" className="inline-flex shrink-0">
+                    <AlertTriangle size={18} />
+                  </span>
+                  <span>Please check</span>
+                </span>
+              ) : null}
+            </div>
+
+            <p className="text-[20px] font-bold text-ink">
+              {currentCandidate.title}
+            </p>
+            <p className="text-[18px] text-muted tnum">
+              Date: {currentCandidate.date}
+              {currentCandidate.time ? ` • ${currentCandidate.time}` : ''} •{' '}
+              {currentCandidate.category}
+            </p>
+            {currentCandidate.location ? (
+              <p className="flex items-center gap-1.5 text-[16px] text-muted">
+                <span
+                  aria-hidden="true"
+                  className="inline-flex shrink-0 text-brand"
+                >
+                  <MapPin size={16} />
+                </span>
+                <span>{currentCandidate.location}</span>
+              </p>
+            ) : null}
+
+            {currentCandidateNeedsCheck ? (
+              <div className="space-y-3 rounded-card border-2 border-amber-300 bg-white p-4">
+                <label
+                  htmlFor="snap-confirm-date"
+                  className="block text-[18px] font-semibold text-ink"
+                >
+                  Please check and confirm this date (YYYY-MM-DD) before keeping:
+                </label>
+                <div className="flex flex-wrap items-center gap-3">
+                  <input
+                    id="snap-confirm-date"
+                    type="text"
+                    value={confirmDateInput}
+                    onChange={(e) => setConfirmDateInput(e.target.value)}
+                    className="min-h-[56px] rounded-chip border-2 border-line bg-canvas px-4 text-[18px] text-ink tnum focus:border-brand"
+                  />
+                  <SeniorButton
+                    variant="primary"
+                    icon={<Check size={20} />}
+                    onClick={handleConfirmCandidateDate}
+                  >
+                    Confirm Date
+                  </SeniorButton>
+                </div>
+              </div>
+            ) : null}
+
+            {currentCandidateDuplicate ? (
+              <p className="text-[18px] font-semibold text-[#92400E]">
+                A similar event already exists on {currentCandidate.date}. Would
+                you like to keep both or skip?
+              </p>
+            ) : null}
+
+            <div className="flex flex-wrap gap-3">
+              {currentCandidateDuplicate ? (
+                <SeniorButton
+                  variant="warn"
+                  disabled={!currentCandidateCanKeep}
+                  icon={<Check size={20} />}
+                  onClick={() => void handleCandidateDecision('keep-both')}
+                >
+                  Keep Both
+                </SeniorButton>
+              ) : (
+                <SeniorButton
+                  variant="safe"
+                  disabled={!currentCandidateCanKeep}
+                  icon={<Check size={20} />}
+                  onClick={() => void handleCandidateDecision('keep')}
+                >
+                  Keep on Calendar
+                </SeniorButton>
+              )}
+              <SeniorButton
+                variant="secondary"
+                icon={<SkipForward size={20} />}
+                onClick={() => void handleCandidateDecision('skip')}
+              >
+                Skip
+              </SeniorButton>
+            </div>
+          </div>
+        ) : null}
+      </section>
+
       {/* Paper Calendar Snap (1-by-1 Candidate Review) */}
       <section
         aria-labelledby="snap-heading"
@@ -1048,97 +1375,6 @@ export function CalendarPage({
               </SeniorButton>
             </div>
           </div>
-        ) : currentCandidate ? (
-          <div className="rounded-card border-2 border-brand-soft bg-brand-wash p-4 space-y-4">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <p className="text-[18px] font-bold text-brand-deep tnum">
-                Reviewing 1 of {snapQueue.length} remaining
-              </p>
-              {currentCandidateNeedsCheck ? (
-                <span
-                  data-badge="true"
-                  className="inline-flex items-center gap-2 rounded-full border-2 border-[#D97706] bg-[#FFFBEB] px-3 py-1.5 text-[16px] font-bold text-[#92400E]"
-                >
-                  <span aria-hidden="true" className="inline-flex shrink-0">
-                    <AlertTriangle size={18} />
-                  </span>
-                  <span>Please check</span>
-                </span>
-              ) : null}
-            </div>
-
-            <p className="text-[20px] font-bold text-ink">
-              {currentCandidate.title}
-            </p>
-            <p className="text-[18px] text-muted tnum">
-              Date: {currentCandidate.date}
-              {currentCandidate.time ? ` • ${currentCandidate.time}` : ''} •{' '}
-              {currentCandidate.category}
-            </p>
-
-            {currentCandidateNeedsCheck ? (
-              <div className="space-y-3 rounded-card border-2 border-amber-300 bg-white p-4">
-                <label
-                  htmlFor="snap-confirm-date"
-                  className="block text-[18px] font-semibold text-ink"
-                >
-                  Please check and confirm this date (YYYY-MM-DD) before keeping:
-                </label>
-                <div className="flex flex-wrap items-center gap-3">
-                  <input
-                    id="snap-confirm-date"
-                    type="text"
-                    value={confirmDateInput}
-                    onChange={(e) => setConfirmDateInput(e.target.value)}
-                    className="min-h-[56px] rounded-chip border-2 border-line bg-canvas px-4 text-[18px] text-ink tnum focus:border-brand"
-                  />
-                  <SeniorButton
-                    variant="primary"
-                    icon={<Check size={20} />}
-                    onClick={handleConfirmCandidateDate}
-                  >
-                    Confirm Date
-                  </SeniorButton>
-                </div>
-              </div>
-            ) : null}
-
-            {currentCandidateDuplicate ? (
-              <p className="text-[18px] font-semibold text-[#92400E]">
-                A similar event already exists on {currentCandidate.date}. Would
-                you like to keep both or skip?
-              </p>
-            ) : null}
-
-            <div className="flex flex-wrap gap-3">
-              {currentCandidateDuplicate ? (
-                <SeniorButton
-                  variant="warn"
-                  disabled={!currentCandidateCanKeep}
-                  icon={<Check size={20} />}
-                  onClick={() => void handleCandidateDecision('keep-both')}
-                >
-                  Keep both
-                </SeniorButton>
-              ) : (
-                <SeniorButton
-                  variant="safe"
-                  disabled={!currentCandidateCanKeep}
-                  icon={<Check size={20} />}
-                  onClick={() => void handleCandidateDecision('keep')}
-                >
-                  Keep
-                </SeniorButton>
-              )}
-              <SeniorButton
-                variant="secondary"
-                icon={<SkipForward size={20} />}
-                onClick={() => void handleCandidateDecision('skip')}
-              >
-                Skip
-              </SeniorButton>
-            </div>
-          </div>
         ) : (
           <div className="space-y-4">
             <div className="rounded-card border-2 border-dashed border-brand-soft bg-white/70 p-6 text-center space-y-3">
@@ -1194,7 +1430,8 @@ export function CalendarPage({
               <SeniorButton
                 variant="primary"
                 icon={<Camera size={20} />}
-                onClick={handleParseSnapText}
+                disabled={isAutoPlanning}
+                onClick={() => void handleParseSnapText()}
               >
                 Review Paper Calendar Items
               </SeniorButton>

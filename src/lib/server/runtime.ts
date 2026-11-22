@@ -1,12 +1,14 @@
 import { TokenRegistry } from '@/lib/server/auth';
 import {
   createGeminiAiProvider,
+  createGeminiCalendarPlanner,
   createGeminiScamChecker,
 } from '@/lib/server/geminiProvider';
 import { createRateLimiter, type RateLimiter } from '@/lib/server/rateLimit';
 import { EncryptedRelayStore } from '@/lib/server/relay';
 import { createSafeLogger, type SafeLogger } from '@/lib/server/safeLog';
 import type {
+  CalendarPlanAiProvider,
   DecideAiProvider,
   ScamCheckAiProvider,
 } from '@/lib/server/handlers';
@@ -19,6 +21,7 @@ export type ServerRuntime = {
   now: () => number;
   aiProvider?: DecideAiProvider;
   scamChecker?: ScamCheckAiProvider;
+  calendarPlanner?: CalendarPlanAiProvider;
   env?: Record<string, string | undefined>;
 };
 
@@ -31,6 +34,7 @@ function createDefaultRuntime(): ServerRuntime {
     now: () => Date.now(),
     aiProvider: createGeminiAiProvider(),
     scamChecker: createGeminiScamChecker(),
+    calendarPlanner: createGeminiCalendarPlanner(),
   };
 }
 

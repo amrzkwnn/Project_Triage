@@ -142,11 +142,18 @@ export function reviewCandidates(
         ? candidate.time
         : undefined;
 
+    const trimmedLocation =
+      typeof candidate.location === 'string' &&
+      candidate.location.trim().length > 0
+        ? candidate.location.trim().slice(0, 100)
+        : undefined;
+
     const newEvent: CalendarEvent = {
       id: allocateUniqueEventId(candidate.id, usedIds),
       title: candidate.title,
       date: effectiveDate,
       ...(validTime !== undefined ? { time: validTime } : {}),
+      ...(trimmedLocation !== undefined ? { location: trimmedLocation } : {}),
       category: candidate.category,
       createdAt: new Date(baseEpochMs + addedCount).toISOString(),
     };

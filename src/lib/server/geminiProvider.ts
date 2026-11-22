@@ -1,12 +1,19 @@
-import type { Channel } from '@/lib/types';
+import type { CalendarCategory, Channel } from '@/lib/types';
+import type { Candidate } from '@/lib/calendar/ocr';
 import type { ScamCheckOutput } from '@/lib/scam/verdict';
 import type {
+  CalendarPlanAiProvider,
+  CalendarPlanInputItem,
   DecideAiProvider,
   DecideOutput,
   ScamCheckAiProvider,
 } from '@/lib/server/handlers';
 
-export type { ScamCheckAiProvider } from '@/lib/server/handlers';
+export type {
+  CalendarPlanAiProvider,
+  CalendarPlanInputItem,
+  ScamCheckAiProvider,
+} from '@/lib/server/handlers';
 
 export const DEFAULT_GEMINI_MODEL = 'gemini-3.5-flash-lite';
 const DEFAULT_GEMINI_TIMEOUT_MS = 8000;
@@ -17,6 +24,10 @@ const DEFAULT_GEMINI_PROVIDER_SYMBOL = Symbol.for(
 
 const DEFAULT_GEMINI_SCAM_CHECKER_SYMBOL = Symbol.for(
   'senior-companion.default-gemini-scam-checker'
+);
+
+const DEFAULT_GEMINI_CALENDAR_PLANNER_SYMBOL = Symbol.for(
+  'senior-companion.default-gemini-calendar-planner'
 );
 
 const GEMINI_RESPONSE_SCHEMA = {
@@ -102,6 +113,36 @@ const GEMINI_SCAM_RESPONSE_SCHEMA = {
   required: ['value', 'flags', 'reasons', 'showAskFamily'],
 } as const;
 
+const GEMINI_CALENDAR_PLAN_RESPONSE_SCHEMA = {
+  type: 'OBJECT',
+  properties: {
+    candidates: {
+      type: 'ARRAY',
+      items: {
+        type: 'OBJECT',
+        properties: {
+          title: { type: 'STRING' },
+          date: { type: 'STRING' },
+          time: { type: 'STRING' },
+          location: { type: 'STRING' },
+          category: {
+            type: 'STRING',
+            enum: [
+              'Medical',
+              'Family & Social',
+              'Bills & Errands',
+              'Daily Routine',
+            ],
+          },
+          confidence: { type: 'NUMBER' },
+        },
+        required: ['title', 'date', 'category', 'confidence'],
+      },
+    },
+  },
+  required: ['candidates'],
+} as const;
+
 type GeminiGenerateContentResponse = {
   candidates?: Array<{
     content?: {
@@ -173,6 +214,44 @@ function buildGeminiScamPrompt(text: string): string {
   ].join('\n');
 }
 
+function buildGeminiCalendarPlanPrompt(params: {
+  items: readonly CalendarPlanInputItem[];
+  todayIso: string;
+}): string {
+  const formattedItems = params.items
+    .map((item, idx) => {
+      const meta: string[] = [];
+      if (item.sender && item.sender.trim().length > 0) {
+        meta.push(`Sender: ${item.sender.trim()}`);
+      }
+      if (item.receivedAt && item.receivedAt.trim().length > 0) {
+        meta.push(`Received: ${item.receivedAt.trim()}`);
+      }
+      const header =
+        meta.length > 0 ? `Item ${idx + 1} (${meta.join(', ')}):` : `Item ${idx + 1}:`;
+      return `${header}\n${item.text}`;
+    })
+    .join('\n\n');
+
+  return [
+    'You are a calm, helpful calendar assistant for an older adult.',
+    `Today's date is ${params.todayIso}.`,
+    'Read the emails, messages, or paper calendar notes below and extract real appointments, medical visits, bills due, family gatherings, or routines.',
+    'Convert relative and natural-language dates (such as "tomorrow", "next Tuesday at 2:30 PM", or "Dr. Tan next Thursday 2pm") using today\'s date into exact YYYY-MM-DD dates and 24-hour HH:MM times.',
+    'Write short, clear plain-language titles (under 100 characters). Never use technical jargon.',
+    'Return JSON matching the required schema with a "candidates" array:',
+    '- title: short plain-language event title.',
+    '- date: exact calendar date in YYYY-MM-DD format.',
+    '- time (optional): 24-hour HH:MM time if mentioned; omit if all-day or no time was given.',
+    '- location (optional): clinic, room, or place name if mentioned; omit otherwise.',
+    '- category: one of "Medical", "Family & Social", "Bills & Errands", or "Daily Routine".',
+    '- confidence: number between 0 and 1 (use below 0.6 if the date was uncertain or unclear).',
+    'If no real calendar events are mentioned, return {"candidates": []}.',
+    '',
+    formattedItems,
+  ].join('\n');
+}
+
 export function isDefaultGeminiAiProvider(fn: unknown): boolean {
   return (
     typeof fn === 'function' &&
@@ -187,6 +266,15 @@ export function isDefaultGeminiScamChecker(fn: unknown): boolean {
     typeof fn === 'function' &&
     (fn as unknown as Record<symbol, unknown>)[
       DEFAULT_GEMINI_SCAM_CHECKER_SYMBOL
+    ] === true
+  );
+}
+
+export function isDefaultGeminiCalendarPlanner(fn: unknown): boolean {
+  return (
+    typeof fn === 'function' &&
+    (fn as unknown as Record<symbol, unknown>)[
+      DEFAULT_GEMINI_CALENDAR_PLANNER_SYMBOL
     ] === true
   );
 }
@@ -341,4 +429,129 @@ export function createGeminiScamChecker(deps?: {
   }
 
   return checker;
+}
+
+export function createGeminiCalendarPlanner(deps?: {
+  fetchFn?: typeof fetch;
+  model?: string;
+  timeoutMs?: number;
+}): CalendarPlanAiProvider {
+  const timeoutMs = deps?.timeoutMs ?? DEFAULT_GEMINI_TIMEOUT_MS;
+
+  const planner: CalendarPlanAiProvider = async (params, apiKey) => {
+    const fetchFn = deps?.fetchFn ?? globalThis.fetch;
+    if (
+      typeof fetchFn !== 'function' ||
+      !apiKey ||
+      !Array.isArray(params.items) ||
+      params.items.length === 0
+    ) {
+      return [];
+    }
+
+    const model =
+      deps?.model?.trim() || getEnvVar('GEMINI_MODEL') || DEFAULT_GEMINI_MODEL;
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`;
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => {
+      controller.abort();
+    }, timeoutMs);
+
+    try {
+      const response = await fetchFn(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-goog-api-key': apiKey,
+        },
+        body: JSON.stringify({
+          contents: [
+            {
+              role: 'user',
+              parts: [{ text: buildGeminiCalendarPlanPrompt(params) }],
+            },
+          ],
+          generationConfig: {
+            responseMimeType: 'application/json',
+            responseSchema: GEMINI_CALENDAR_PLAN_RESPONSE_SCHEMA,
+          },
+        }),
+        signal: controller.signal,
+      });
+
+      if (!response.ok) {
+        return [];
+      }
+
+      const data = (await response.json()) as GeminiGenerateContentResponse;
+      const rawText = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+      if (typeof rawText !== 'string' || rawText.trim().length === 0) {
+        return [];
+      }
+
+      const parsed: unknown = JSON.parse(rawText);
+      const rawList = Array.isArray(parsed)
+        ? parsed
+        : isPlainObject(parsed) && Array.isArray(parsed.candidates)
+          ? parsed.candidates
+          : null;
+
+      if (!rawList) {
+        return [];
+      }
+
+      const results: Candidate[] = [];
+      for (let i = 0; i < rawList.length; i += 1) {
+        const entry = rawList[i];
+        if (!isPlainObject(entry)) continue;
+        if (
+          typeof entry.title !== 'string' ||
+          typeof entry.date !== 'string'
+        ) {
+          continue;
+        }
+        const candidate: Candidate = {
+          id:
+            typeof entry.id === 'string' && entry.id.trim().length > 0
+              ? entry.id.trim()
+              : `ai-plan-${i + 1}`,
+          title: entry.title.trim(),
+          date: entry.date.trim(),
+          category:
+            typeof entry.category === 'string'
+              ? (entry.category as CalendarCategory)
+              : 'Daily Routine',
+          confidence:
+            typeof entry.confidence === 'number' && Number.isFinite(entry.confidence)
+              ? entry.confidence
+              : 0.8,
+        };
+        if (typeof entry.time === 'string' && entry.time.trim().length > 0) {
+          candidate.time = entry.time.trim();
+        }
+        if (
+          typeof entry.location === 'string' &&
+          entry.location.trim().length > 0
+        ) {
+          candidate.location = entry.location.trim();
+        }
+        results.push(candidate);
+      }
+
+      return results;
+    } catch {
+      return [];
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+
+  if (!deps?.model && !deps?.fetchFn && !deps?.timeoutMs) {
+    (planner as unknown as Record<symbol, unknown>)[
+      DEFAULT_GEMINI_CALENDAR_PLANNER_SYMBOL
+    ] = true;
+  }
+
+  return planner;
 }

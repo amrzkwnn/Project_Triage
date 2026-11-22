@@ -10,6 +10,7 @@ export type Candidate = {
   title: string;
   date: string;
   time?: string;
+  location?: string;
   category: CalendarCategory;
   confidence: number;
   dateConfirmed?: boolean;

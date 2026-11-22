@@ -98,6 +98,9 @@ export async function dispatchApiRequest(
     case '/api/scam-check':
       if (method !== 'POST') return methodNotAllowedResponse('POST');
       break;
+    case '/api/calendar-plan':
+      if (method !== 'POST') return methodNotAllowedResponse('POST');
+      break;
     default:
       return null;
   }
@@ -145,6 +148,23 @@ export async function dispatchApiRequest(
         logger: rt.logger,
         now: rt.now,
         scamChecker,
+        env: effectiveEnv,
+      })(req);
+    }
+    case '/api/calendar-plan': {
+      const effectiveEnv = envOverride ?? rt.env;
+      const modelOverride = effectiveEnv?.GEMINI_MODEL?.trim();
+      const calendarPlanner =
+        modelOverride &&
+        geminiProvider.isDefaultGeminiCalendarPlanner(rt.calendarPlanner)
+          ? geminiProvider.createGeminiCalendarPlanner({ model: modelOverride })
+          : rt.calendarPlanner;
+      return handlers.createCalendarPlanPostHandler({
+        tokenRegistry: rt.tokenRegistry,
+        rateLimiter: rt.rateLimiter,
+        logger: rt.logger,
+        now: rt.now,
+        calendarPlanner,
         env: effectiveEnv,
       })(req);
     }

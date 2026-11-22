@@ -4,6 +4,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   createDefaultSettings,
   type AuditEntry,
+  type CalendarEvent,
+  type InboxItem,
   type Result,
   type Settings,
 } from '@/lib/types';
@@ -15,10 +17,13 @@ import { ALLOWED_LOG_ROUTES, createSafeLogger } from '@/lib/server/safeLog';
 import {
   DEFAULT_GEMINI_MODEL,
   createGeminiAiProvider,
+  createGeminiCalendarPlanner,
   createGeminiScamChecker,
+  isDefaultGeminiCalendarPlanner,
   isDefaultGeminiScamChecker,
 } from '@/lib/server/geminiProvider';
 import {
+  createCalendarPlanPostHandler,
   createDecidePostHandler,
   createScamCheckPostHandler,
   type DecideOutput,
@@ -30,8 +35,11 @@ import {
 } from '@/lib/server/runtime';
 import { dispatchApiRequest } from '@/lib/server/viteApiPlugin';
 import { analyze } from '@/lib/ai/engine';
+import { autoPlanCalendarFromItems } from '@/lib/calendar/aiPlanClient';
+import type { Candidate } from '@/lib/calendar/ocr';
 import { checkMessageWithAi } from '@/lib/scam/aiScamClient';
 import type { ScamCheckOutput } from '@/lib/scam/verdict';
+import { CalendarPage } from '@/app/calendar/page';
 import { ScamShieldPage } from '@/app/scam-shield/page';
 
 const BANNED_JARGON =
@@ -866,6 +874,708 @@ describe('Task 3: AI-Powered Scam Checking & Enriched /api/decide', () => {
       expect(stripHtml(aiHtml)).not.toMatch(BANNED_JARGON);
 
       for (const html of [deviceHtml, aiHtml]) {
+        const buttons = extractButtonTags(html);
+        expect(buttons.length).toBeGreaterThan(0);
+        for (const btn of buttons) {
+          expect(btn).toContain('min-h-[56px]');
+          expect(stripHtml(btn).length).toBeGreaterThan(0);
+        }
+
+        const badges = extractBadges(html);
+        expect(badges.length).toBeGreaterThan(0);
+        for (const badge of badges) {
+          expect(badge).toContain('aria-hidden="true"');
+          expect(badge).toContain('border-2');
+          expect(stripHtml(badge).length).toBeGreaterThan(0);
+        }
+      }
+    });
+  });
+});
+
+describe('Task 4: AI-Powered Calendar Automatic Planning (/api/calendar-plan & CalendarPage)', () => {
+  const originalGeminiModel = getProcessEnv().GEMINI_MODEL;
+
+  afterEach(() => {
+    if (originalGeminiModel === undefined) {
+      delete getProcessEnv().GEMINI_MODEL;
+    } else {
+      getProcessEnv().GEMINI_MODEL = originalGeminiModel;
+    }
+    resetServerRuntime();
+  });
+
+  describe('createGeminiCalendarPlanner', () => {
+    it('calls Gemini generateContent with x-goog-api-key header, todayIso, JSON schema, and parses natural-language schedules', async () => {
+      const calls: Array<{ url: string; init?: RequestInit }> = [];
+      const mockFetch: typeof fetch = vi.fn(async (input, init) => {
+        calls.push({ url: String(input), init });
+        return new Response(
+          JSON.stringify({
+            candidates: [
+              {
+                content: {
+                  parts: [
+                    {
+                      text: JSON.stringify({
+                        candidates: [
+                          {
+                            title: 'Dentist Visit',
+                            date: '2026-11-24',
+                            time: '14:30',
+                            location: 'Smile Clinic',
+                            category: 'Medical',
+                            confidence: 0.92,
+                          },
+                        ],
+                      }),
+                    },
+                  ],
+                },
+              },
+            ],
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      });
+
+      const defaultPlanner = createGeminiCalendarPlanner();
+      expect(isDefaultGeminiCalendarPlanner(defaultPlanner)).toBe(true);
+
+      const planner = createGeminiCalendarPlanner({ fetchFn: mockFetch });
+      expect(isDefaultGeminiCalendarPlanner(planner)).toBe(false);
+
+      const result = await planner(
+        {
+          items: [
+            {
+              id: 'msg-1',
+              sender: 'Smile Clinic',
+              text: 'Dentist next Tuesday at 2:30 PM at Smile Clinic',
+              receivedAt: '2026-11-22T08:00:00.000Z',
+            },
+          ],
+          todayIso: '2026-11-22',
+        },
+        'secret-calendar-key-123'
+      );
+
+      expect(calls).toHaveLength(1);
+      expect(calls[0].url).toBe(
+        `https://generativelanguage.googleapis.com/v1beta/models/${DEFAULT_GEMINI_MODEL}:generateContent`
+      );
+      expect(calls[0].url).not.toContain('secret-calendar-key-123');
+
+      const headers = new Headers(calls[0].init?.headers);
+      expect(headers.get('x-goog-api-key')).toBe('secret-calendar-key-123');
+      expect(headers.get('content-type')).toBe('application/json');
+
+      const body = JSON.parse(String(calls[0].init?.body)) as {
+        contents: Array<{ parts: Array<{ text: string }> }>;
+        generationConfig: {
+          responseMimeType: string;
+          responseSchema?: Record<string, unknown>;
+        };
+      };
+      expect(body.contents[0].parts[0].text).toContain('2026-11-22');
+      expect(body.generationConfig.responseMimeType).toBe('application/json');
+      expect(body.generationConfig.responseSchema).toBeDefined();
+
+      expect(result).toHaveLength(1);
+      expect(result[0]).toMatchObject({
+        title: 'Dentist Visit',
+        date: '2026-11-24',
+        time: '14:30',
+        location: 'Smile Clinic',
+        category: 'Medical',
+        confidence: 0.92,
+      });
+    });
+
+    it('returns [] without throwing on HTTP 500, invalid JSON, or network error, and honors GEMINI_MODEL env override', async () => {
+      const http500 = createGeminiCalendarPlanner({
+        fetchFn: vi.fn(
+          async () => new Response('Server error secret-key', { status: 500 })
+        ),
+      });
+      expect(
+        await http500(
+          { items: [{ text: 'Lunch tomorrow at noon' }], todayIso: '2026-11-22' },
+          'secret-key'
+        )
+      ).toEqual([]);
+
+      const badJson = createGeminiCalendarPlanner({
+        fetchFn: vi.fn(
+          async () =>
+            new Response(
+              JSON.stringify({
+                candidates: [{ content: { parts: [{ text: '{not-json' }] } }],
+              }),
+              { status: 200, headers: { 'Content-Type': 'application/json' } }
+            )
+        ),
+      });
+      expect(
+        await badJson(
+          { items: [{ text: 'Lunch tomorrow at noon' }], todayIso: '2026-11-22' },
+          'secret-key'
+        )
+      ).toEqual([]);
+
+      const networkErr = createGeminiCalendarPlanner({
+        fetchFn: vi.fn(async () => {
+          throw new Error('Network failure');
+        }),
+      });
+      expect(
+        await networkErr(
+          { items: [{ text: 'Lunch tomorrow at noon' }], todayIso: '2026-11-22' },
+          'secret-key'
+        )
+      ).toEqual([]);
+
+      const urls: string[] = [];
+      const envOverridePlanner = createGeminiCalendarPlanner({
+        fetchFn: vi.fn(async (input) => {
+          urls.push(String(input));
+          return new Response(
+            JSON.stringify({
+              candidates: [
+                { content: { parts: [{ text: '{"candidates":[]}' }] } },
+              ],
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } }
+          );
+        }),
+      });
+      getProcessEnv().GEMINI_MODEL = 'gemini-2.5-pro';
+      await envOverridePlanner(
+        { items: [{ text: 'Checkup tomorrow at 9am' }], todayIso: '2026-11-22' },
+        'secret-key'
+      );
+      expect(urls[0]).toBe(
+        'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent'
+      );
+    });
+  });
+
+  describe('POST /api/calendar-plan handler & viteApiPlugin dispatch', () => {
+    it('enforces 401 auth, max 20 items, and valid todayIso validation', async () => {
+      const logs: string[] = [];
+      const handler = createCalendarPlanPostHandler({
+        tokenRegistry: new TokenRegistry(),
+        rateLimiter: createRateLimiter(),
+        logger: createSafeLogger((line) => logs.push(line)),
+        now: () => 1_750_000_000_000,
+      });
+
+      const unauth = await handler(
+        new Request('http://localhost:5173/api/calendar-plan', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            items: [{ text: 'Dentist on 2026-11-24 at 14:30' }],
+            todayIso: '2026-11-22',
+          }),
+        })
+      );
+      expect(unauth.status).toBe(401);
+
+      const tooMany = await handler(
+        new Request('http://localhost:5173/api/calendar-plan', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${DEFAULT_DEV_TOKEN}`,
+          },
+          body: JSON.stringify({
+            items: Array.from({ length: 21 }, (_, idx) => ({
+              text: `Event ${idx + 1} on 2026-11-24`,
+            })),
+            todayIso: '2026-11-22',
+          }),
+        })
+      );
+      expect(tooMany.status).toBe(400);
+
+      const badDate = await handler(
+        new Request('http://localhost:5173/api/calendar-plan', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${DEFAULT_DEV_TOKEN}`,
+          },
+          body: JSON.stringify({
+            items: [{ text: 'Dentist next Tuesday' }],
+            todayIso: '2026-02-31',
+          }),
+        })
+      );
+      expect(badDate.status).toBe(400);
+
+      for (const line of logs) {
+        expect(line).toMatch(
+          /^route=\/api\/calendar-plan status=\d+ durationMs=\d+$/
+        );
+      }
+    });
+
+    it('drops invalid dates/times, clamps confidence to [0, 1], deduplicates, and never leaks GEMINI_API_KEY', async () => {
+      const logs: string[] = [];
+      let receivedKey = '';
+      const handler = createCalendarPlanPostHandler({
+        tokenRegistry: new TokenRegistry(),
+        rateLimiter: createRateLimiter(),
+        logger: createSafeLogger((line) => logs.push(line)),
+        now: () => 1_750_000_000_000,
+        env: { GEMINI_API_KEY: 'SUPER_SECRET_CALENDAR_KEY_777' },
+        calendarPlanner: async (_params, apiKey) => {
+          receivedKey = apiKey;
+          return [
+            {
+              id: 'ai-1',
+              title: 'Dentist Visit',
+              date: '2026-11-24',
+              time: '14:30',
+              location: 'Smile Clinic',
+              category: 'Medical',
+              confidence: 1.8, // must clamp to 1
+            },
+            {
+              id: 'ai-dup',
+              title: '  dentist   visit  ',
+              date: '2026-11-24',
+              time: '14:30',
+              category: 'Medical',
+              confidence: 0.8,
+            },
+            {
+              id: 'ai-bad-date',
+              title: 'Fake Date Event',
+              date: '2026-02-31', // invalid date -> drop
+              time: '10:00',
+              category: 'Daily Routine',
+              confidence: 0.9,
+            },
+            {
+              id: 'ai-bad-time',
+              title: 'Fake Time Event',
+              date: '2026-11-25',
+              time: '25:99', // invalid time -> drop
+              category: 'Bills & Errands',
+              confidence: 0.9,
+            },
+            {
+              id: 'ai-low-conf',
+              title: 'Family Dinner',
+              date: '2026-11-26',
+              category: 'Family & Social',
+              confidence: -0.5, // must clamp to 0
+            },
+          ];
+        },
+      });
+
+      const res = await handler(
+        new Request('http://localhost:5173/api/calendar-plan', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${DEFAULT_DEV_TOKEN}`,
+          },
+          body: JSON.stringify({
+            items: [
+              {
+                id: 'in-1',
+                text: 'Dentist next Tuesday at 2:30 PM at Smile Clinic. Also family dinner Thursday.',
+              },
+            ],
+            todayIso: '2026-11-22',
+          }),
+        })
+      );
+
+      expect(res.status).toBe(200);
+      expect(receivedKey).toBe('SUPER_SECRET_CALENDAR_KEY_777');
+      const raw = await res.text();
+      expect(raw).not.toContain('SUPER_SECRET_CALENDAR_KEY_777');
+
+      const body = JSON.parse(raw) as {
+        candidates: Candidate[];
+        source: 'ai' | 'device';
+      };
+      expect(body.source).toBe('ai');
+      expect(body.candidates).toHaveLength(2);
+      expect(body.candidates[0]).toMatchObject({
+        title: 'Dentist Visit',
+        date: '2026-11-24',
+        time: '14:30',
+        location: 'Smile Clinic',
+        category: 'Medical',
+        confidence: 1,
+      });
+      expect(body.candidates[1]).toMatchObject({
+        title: 'Family Dinner',
+        date: '2026-11-26',
+        category: 'Family & Social',
+        confidence: 0,
+      });
+
+      for (const line of logs) {
+        expect(line).not.toContain('SUPER_SECRET_CALENDAR_KEY_777');
+      }
+    });
+
+    it('falls back to deterministic extraction with source: device on AI error without leaking key', async () => {
+      const logs: string[] = [];
+      const handler = createCalendarPlanPostHandler({
+        tokenRegistry: new TokenRegistry(),
+        rateLimiter: createRateLimiter(),
+        logger: createSafeLogger((line) => logs.push(line)),
+        now: () => 1_750_000_000_000,
+        env: { GEMINI_API_KEY: 'CAL_LEAK_GUARD_99' },
+        calendarPlanner: async () => {
+          throw new Error('Gemini blew up with CAL_LEAK_GUARD_99');
+        },
+      });
+
+      const res = await handler(
+        new Request('http://localhost:5173/api/calendar-plan', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${DEFAULT_DEV_TOKEN}`,
+          },
+          body: JSON.stringify({
+            items: [
+              {
+                text: '2026-11-24 14:30 Eye Clinic Checkup',
+              },
+            ],
+            todayIso: '2026-11-22',
+          }),
+        })
+      );
+
+      expect(res.status).toBe(200);
+      const raw = await res.text();
+      expect(raw).not.toContain('CAL_LEAK_GUARD_99');
+      const body = JSON.parse(raw) as {
+        candidates: Candidate[];
+        source: 'ai' | 'device';
+      };
+      expect(body.source).toBe('device');
+      expect(body.candidates).toHaveLength(1);
+      expect(body.candidates[0]).toMatchObject({
+        date: '2026-11-24',
+        time: '14:30',
+        category: 'Medical',
+      });
+      for (const line of logs) {
+        expect(line).not.toContain('CAL_LEAK_GUARD_99');
+      }
+    });
+
+    it('wires calendarPlanner in default runtime and dispatches POST /api/calendar-plan in viteApiPlugin', async () => {
+      resetServerRuntime();
+      const defaultRt = getServerRuntime();
+      expect(typeof defaultRt.calendarPlanner).toBe('function');
+
+      const rt: ServerRuntime = {
+        tokenRegistry: new TokenRegistry(),
+        rateLimiter: createRateLimiter(),
+        relay: new EncryptedRelayStore(),
+        logger: createSafeLogger(() => {}),
+        now: () => 1_750_000_000_000,
+        env: { GEMINI_API_KEY: 'VITE_PLUGIN_CAL_KEY' },
+        calendarPlanner: async (_params, apiKey) => {
+          expect(apiKey).toBe('VITE_PLUGIN_CAL_KEY');
+          return [
+            {
+              id: 'rt-1',
+              title: 'Dr. Tan Checkup',
+              date: '2026-11-26',
+              time: '14:00',
+              location: 'City Clinic',
+              category: 'Medical',
+              confidence: 0.91,
+            },
+          ];
+        },
+      };
+
+      const wrongMethod = await dispatchApiRequest(
+        new Request('http://localhost:5173/api/calendar-plan', {
+          method: 'GET',
+        }),
+        rt
+      );
+      expect(wrongMethod).not.toBeNull();
+      expect(wrongMethod!.status).toBe(405);
+
+      const okRes = await dispatchApiRequest(
+        new Request('http://localhost:5173/api/calendar-plan', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${DEFAULT_DEV_TOKEN}`,
+          },
+          body: JSON.stringify({
+            items: [{ text: 'Dr. Tan next Thursday 2pm at City Clinic' }],
+            todayIso: '2026-11-22',
+          }),
+        }),
+        rt
+      );
+      expect(okRes).not.toBeNull();
+      expect(okRes!.status).toBe(200);
+      const parsed = (await okRes!.json()) as {
+        candidates: Candidate[];
+        source: 'ai' | 'device';
+      };
+      expect(parsed.source).toBe('ai');
+      expect(parsed.candidates).toHaveLength(1);
+      expect(parsed.candidates[0].title).toBe('Dr. Tan Checkup');
+    });
+  });
+
+  describe('autoPlanCalendarFromItems client (Property 7 consent, audit-before-read, dedup)', () => {
+    const existingEvents: CalendarEvent[] = [
+      {
+        id: 'ev-existing-1',
+        title: 'Dentist Visit',
+        date: '2026-11-24',
+        time: '14:30',
+        category: 'Medical',
+        createdAt: '2026-11-20T08:00:00.000Z',
+      },
+    ];
+
+    it('makes ZERO fetch calls and writes ZERO audit entries when allowAiReading is false, using deterministic extraction and deduplicating existingEvents', async () => {
+      const settings: Settings = {
+        ...createDefaultSettings(),
+        allowAiReading: false,
+      };
+      const { vault, entries } = makeMockVault();
+      const fetchFn = vi.fn<typeof fetch>();
+
+      const res = await autoPlanCalendarFromItems({
+        items: [
+          { id: 'm1', text: '2026-11-24 14:30 Dentist Visit' },
+          { id: 'm2', text: '2026-11-25 10:00 Family Lunch' },
+        ],
+        existingEvents,
+        todayIso: '2026-11-22',
+        settings,
+        vault,
+        fetchFn,
+      });
+
+      expect(res.ok).toBe(true);
+      if (res.ok) {
+        expect(res.checkedBy).toBe('device');
+        expect(res.candidates).toHaveLength(1);
+        expect(res.candidates[0]).toMatchObject({
+          title: 'Family Lunch',
+          date: '2026-11-25',
+          time: '10:00',
+          category: 'Family & Social',
+        });
+        expect(res.message).not.toMatch(BANNED_JARGON);
+      }
+      expect(fetchFn).not.toHaveBeenCalled();
+      expect(entries).toHaveLength(0);
+    });
+
+    it('writes ai-read audit BEFORE calling /api/calendar-plan when allowAiReading is true and deduplicates against existingEvents', async () => {
+      const settings: Settings = {
+        ...createDefaultSettings(),
+        allowAiReading: true,
+      };
+      const order: string[] = [];
+      const { vault, entries } = makeMockVault({
+        onAudit: () => order.push('audit'),
+      });
+      const fetchFn = vi.fn<typeof fetch>(async (input) => {
+        order.push(`fetch:${String(input)}`);
+        return new Response(
+          JSON.stringify({
+            source: 'ai',
+            candidates: [
+              {
+                id: 'ai-dup',
+                title: 'Dentist Visit',
+                date: '2026-11-24',
+                time: '14:30',
+                location: 'Smile Clinic',
+                category: 'Medical',
+                confidence: 0.95,
+              },
+              {
+                id: 'ai-new',
+                title: 'Dr. Tan Checkup',
+                date: '2026-11-26',
+                time: '14:00',
+                location: 'City Clinic',
+                category: 'Medical',
+                confidence: 0.92,
+              },
+            ],
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      });
+
+      const res = await autoPlanCalendarFromItems({
+        items: [
+          {
+            id: 'm1',
+            text: 'Dentist next Tuesday 2:30pm and Dr. Tan next Thursday 2pm at City Clinic.',
+          },
+        ],
+        existingEvents,
+        todayIso: '2026-11-22',
+        settings,
+        vault,
+        fetchFn,
+      });
+
+      expect(res.ok).toBe(true);
+      if (res.ok) {
+        expect(res.checkedBy).toBe('ai');
+        expect(res.candidates).toHaveLength(1);
+        expect(res.candidates[0]).toMatchObject({
+          title: 'Dr. Tan Checkup',
+          date: '2026-11-26',
+          time: '14:00',
+          location: 'City Clinic',
+          category: 'Medical',
+        });
+        expect(res.message).not.toMatch(BANNED_JARGON);
+      }
+      expect(order).toEqual(['audit', 'fetch:/api/calendar-plan']);
+      expect(entries).toHaveLength(1);
+      expect(entries[0].kind).toBe('ai-read');
+    });
+
+    it('aborts with ZERO fetch calls if appendAudit fails or vault is omitted when allowAiReading is true (Property 7)', async () => {
+      const settings: Settings = {
+        ...createDefaultSettings(),
+        allowAiReading: true,
+      };
+      const { vault: failingVault, entries } = makeMockVault({
+        failAudit: true,
+      });
+      const fetchFn1 = vi.fn<typeof fetch>();
+
+      const failedAuditRes = await autoPlanCalendarFromItems({
+        items: [{ id: 'm1', text: 'Dentist next Tuesday at 2:30 PM' }],
+        existingEvents: [],
+        todayIso: '2026-11-22',
+        settings,
+        vault: failingVault,
+        fetchFn: fetchFn1,
+      });
+
+      expect(failedAuditRes.ok).toBe(false);
+      if (!failedAuditRes.ok) {
+        expect(failedAuditRes.message.length).toBeGreaterThan(0);
+        expect(failedAuditRes.message).not.toMatch(BANNED_JARGON);
+      }
+      expect(fetchFn1).not.toHaveBeenCalled();
+      expect(entries).toHaveLength(0);
+
+      const fetchFn2 = vi.fn<typeof fetch>();
+      const missingVaultRes = await autoPlanCalendarFromItems({
+        items: [{ id: 'm1', text: 'Dentist next Tuesday at 2:30 PM' }],
+        existingEvents: [],
+        todayIso: '2026-11-22',
+        settings,
+        vault: undefined,
+        fetchFn: fetchFn2,
+      });
+
+      expect(missingVaultRes.ok).toBe(false);
+      if (!missingVaultRes.ok) {
+        expect(missingVaultRes.message.length).toBeGreaterThan(0);
+        expect(missingVaultRes.message).not.toMatch(BANNED_JARGON);
+      }
+      expect(fetchFn2).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('CalendarPage Automatic Plan UI & a11y invariants', () => {
+    it('renders Automatic Plan from Messages & Emails card, Auto-Plan Calendar with AI button (min-h-[56px]), dual-modality badges, confirmation queue, and zero banned jargon (SSR safe)', () => {
+      const offSettings: Settings = {
+        ...createDefaultSettings(),
+        allowAiReading: false,
+      };
+      const onSettings: Settings = {
+        ...createDefaultSettings(),
+        allowAiReading: true,
+      };
+      const sampleInbox: InboxItem[] = [
+        {
+          id: 'inbox-cal-1',
+          source: 'email',
+          sender: 'Smile Clinic',
+          text: 'Dentist next Tuesday at 2:30 PM at Smile Clinic',
+          attachments: [],
+          receivedAt: '2026-11-22T08:00:00.000Z',
+          group: 'Personal',
+          priority: 'Important',
+          tier: 2,
+          confidence: 0.9,
+          status: 'ok',
+        },
+      ];
+      const queuedCandidate: Candidate = {
+        id: 'cand-ai-1',
+        title: 'Dentist Visit',
+        date: '2026-11-24',
+        time: '14:30',
+        location: 'Smile Clinic',
+        category: 'Medical',
+        confidence: 0.92,
+      };
+
+      const offHtml = renderToStaticMarkup(
+        React.createElement(CalendarPage, {
+          initialSettings: offSettings,
+          initialEvents: [],
+          initialInboxItems: sampleInbox,
+          initialToday: '2026-11-22',
+          initialPlanSource: 'device',
+          initialSnapCandidates: [queuedCandidate],
+        })
+      );
+
+      expect(offHtml).toContain('Automatic Plan from Messages &amp; Emails');
+      expect(offHtml).toContain('Auto-Plan Calendar with AI');
+      expect(offHtml).toContain('Found on This Device');
+      expect(offHtml).toContain('Keep on Calendar');
+      expect(offHtml).toContain('Skip');
+      expect(offHtml).toContain('Smile Clinic');
+      expect(stripHtml(offHtml)).not.toMatch(BANNED_JARGON);
+
+      const onHtml = renderToStaticMarkup(
+        React.createElement(CalendarPage, {
+          initialSettings: onSettings,
+          initialEvents: [],
+          initialInboxItems: sampleInbox,
+          initialToday: '2026-11-22',
+          initialPlanSource: 'ai',
+          initialSnapCandidates: [queuedCandidate],
+        })
+      );
+
+      expect(onHtml).toContain('Automatic Plan from Messages &amp; Emails');
+      expect(onHtml).toContain('Auto-Plan Calendar with AI');
+      expect(onHtml).toContain('Planned with AI Helper');
+      expect(stripHtml(onHtml)).not.toMatch(BANNED_JARGON);
+
+      for (const html of [offHtml, onHtml]) {
         const buttons = extractButtonTags(html);
         expect(buttons.length).toBeGreaterThan(0);
         for (const btn of buttons) {

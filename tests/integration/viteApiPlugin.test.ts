@@ -276,6 +276,8 @@ describe('Task 2: Vite API Middleware Dispatcher (/api/*)', () => {
       ['/api/ingest/pull', 'POST'],
       ['/api/ingest/ack', 'GET'],
       ['/api/decide', 'GET'],
+      ['/api/scam-check', 'GET'],
+      ['/api/calendar-plan', 'GET'],
     ] as const) {
       const res = await dispatchApiRequest(
         new Request(`http://localhost:5173${path}`, { method: wrongMethod }),
@@ -537,6 +539,117 @@ describe('Task 2: Vite API Middleware Dispatcher (/api/*)', () => {
       expect(res2.statusCode).toBe(200);
       expect(receivedKey).toBe('shell-override-key');
       expect(res2.body).not.toContain('shell-override-key');
+    } finally {
+      if (origGeminiKey === undefined) {
+        delete env.GEMINI_API_KEY;
+      } else {
+        env.GEMINI_API_KEY = origGeminiKey;
+      }
+      if (origAiKey === undefined) {
+        delete env.AI_API_KEY;
+      } else {
+        env.AI_API_KEY = origAiKey;
+      }
+      mockLoadEnv.mockReset();
+    }
+  });
+
+  it('seniorCompanionApiPlugin dispatches POST /api/calendar-plan with server-side .env.local GEMINI_API_KEY without leaking key', async () => {
+    const env = getProcessEnv();
+    const origGeminiKey = env.GEMINI_API_KEY;
+    const origAiKey = env.AI_API_KEY;
+    delete env.GEMINI_API_KEY;
+    delete env.AI_API_KEY;
+
+    mockLoadEnv.mockReset();
+    mockLoadEnv.mockReturnValue({
+      GEMINI_API_KEY: 'dotenv-calendar-secret-key',
+    });
+
+    try {
+      let receivedKey = '';
+      let receivedToday = '';
+      const rt: ServerRuntime = {
+        ...createTestRuntime(),
+        calendarPlanner: async (params, apiKey) => {
+          receivedKey = apiKey;
+          receivedToday = params.todayIso;
+          return [
+            {
+              id: 'cal-ai-1',
+              title: 'Dentist Visit',
+              date: '2026-11-24',
+              time: '14:30',
+              location: 'Smile Clinic',
+              category: 'Medical',
+              confidence: 0.92,
+            },
+          ];
+        },
+      };
+
+      const plugin = seniorCompanionApiPlugin(rt);
+      if (typeof plugin.configResolved === 'function') {
+        plugin.configResolved({
+          mode: 'development',
+          root: '/fake/project-root',
+          envDir: '/fake/env-dir',
+        } as unknown as ResolvedConfig);
+      }
+
+      const devMiddlewares: MockMiddleware[] = [];
+      if (typeof plugin.configureServer === 'function') {
+        plugin.configureServer({
+          middlewares: {
+            use: (mw: MockMiddleware) => {
+              devMiddlewares.push(mw);
+            },
+          },
+        } as unknown as ViteDevServer);
+      }
+
+      const res = await runMiddleware(devMiddlewares[0], {
+        url: '/api/calendar-plan',
+        method: 'POST',
+        headers: {
+          host: 'localhost:5173',
+          authorization: 'Bearer dev-senior-token-1',
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          items: [
+            {
+              id: 'msg-1',
+              text: 'Dentist next Tuesday at 2:30 PM at Smile Clinic',
+            },
+          ],
+          todayIso: '2026-11-22',
+        }),
+      });
+
+      expect(res.calledNext).toBe(false);
+      expect(res.statusCode).toBe(200);
+      expect(receivedKey).toBe('dotenv-calendar-secret-key');
+      expect(receivedToday).toBe('2026-11-22');
+      expect(res.body).not.toContain('dotenv-calendar-secret-key');
+
+      const parsed = JSON.parse(res.body) as {
+        source: 'ai' | 'device';
+        candidates: Array<{
+          title: string;
+          date: string;
+          time?: string;
+          location?: string;
+        }>;
+      };
+      expect(parsed.source).toBe('ai');
+      expect(parsed.candidates).toHaveLength(1);
+      expect(parsed.candidates[0]).toMatchObject({
+        title: 'Dentist Visit',
+        date: '2026-11-24',
+        time: '14:30',
+        location: 'Smile Clinic',
+      });
     } finally {
       if (origGeminiKey === undefined) {
         delete env.GEMINI_API_KEY;

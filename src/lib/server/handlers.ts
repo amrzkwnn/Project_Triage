@@ -1,5 +1,6 @@
 import {
   ALL_CHANNELS,
+  type CalendarCategory,
   type Channel,
   type ClaritySummary,
   type DetectedEvent,
@@ -13,6 +14,11 @@ import { hasLoneSurrogate, parseIngest } from '@/lib/inbox/parse';
 import { classify } from '@/lib/inbox/classify';
 import { detectEvent } from '@/lib/inbox/events';
 import { parsePlainDate, parsePlainTime } from '@/lib/calendar/dates';
+import {
+  extractCalendarCandidatesFromText,
+  type Candidate,
+} from '@/lib/calendar/ocr';
+import { normalizeTitle } from '@/lib/calendar/snap';
 import { buildClaritySummary } from '@/lib/ai/summary';
 import { checkText, type ScamCheckOutput } from '@/lib/scam/verdict';
 import { TokenRegistry } from '@/lib/server/auth';
@@ -26,8 +32,11 @@ const defaultRateLimiter = createRateLimiter();
 export const MAX_INGEST_BYTES = 10 * 1024 * 1024;
 export const MAX_DECIDE_BYTES = 64 * 1024;
 export const MAX_SCAM_CHECK_BYTES = 32 * 1024;
+export const MAX_CALENDAR_PLAN_BYTES = 128 * 1024;
+export const MAX_CALENDAR_PLAN_ITEMS = 20;
 const MAX_DECIDE_TEXT_LENGTH = 10_000;
 const MAX_SCAM_CHECK_TEXT_LENGTH = 5_000;
+const MAX_CALENDAR_PLAN_ITEM_TEXT_LENGTH = 5_000;
 
 const VALID_CHANNELS = new Set<string>(ALL_CHANNELS);
 const VALID_GROUPS = new Set<GroupCategory>(['Personal', 'Family', 'Others']);
@@ -46,6 +55,12 @@ const VALID_RED_FLAGS = new Set<RedFlagCategory>([
   'secrecy',
   'payment',
   'domain-mismatch',
+]);
+const VALID_CALENDAR_CATEGORIES = new Set<CalendarCategory>([
+  'Medical',
+  'Family & Social',
+  'Bills & Errands',
+  'Daily Routine',
 ]);
 const VERDICT_SEVERITY: Record<VerdictValue, number> = {
   safe: 0,
@@ -80,6 +95,23 @@ export type ScamCheckAiProvider = (
   apiKey: string
 ) => Promise<Partial<ScamCheckOutput>>;
 
+export type CalendarPlanInputItem = {
+  id?: string;
+  text: string;
+  sender?: string;
+  receivedAt?: string;
+};
+
+export type CalendarPlanAiProvider = (
+  params: { items: readonly CalendarPlanInputItem[]; todayIso: string },
+  apiKey: string
+) => Promise<Candidate[]>;
+
+export type CalendarPlanRouteResponse = {
+  candidates: Candidate[];
+  source: 'ai' | 'device';
+};
+
 export type DecideRouteDeps = {
   logger: SafeLogger;
   tokenRegistry?: TokenRegistry;
@@ -98,6 +130,16 @@ export type ScamCheckRouteDeps = {
   now?: () => number;
   env?: Record<string, string | undefined>;
   scamChecker?: ScamCheckAiProvider;
+};
+
+export type CalendarPlanRouteDeps = {
+  logger: SafeLogger;
+  tokenRegistry?: TokenRegistry;
+  rateLimiter?: RateLimiter;
+  requireAuth?: boolean;
+  now?: () => number;
+  env?: Record<string, string | undefined>;
+  calendarPlanner?: CalendarPlanAiProvider;
 };
 
 function getProcessEnv(): Record<string, string | undefined> {
@@ -1030,6 +1072,422 @@ export function createScamCheckPostHandler(
           output = mergeScamCheckResult(aiCandidate, baseline);
         } catch {
           output = { ...baseline, source: 'device' };
+        }
+      }
+
+      return logAndReturn(
+        deps.logger,
+        route,
+        startMs,
+        now,
+        jsonResponse(output, 200)
+      );
+    } catch {
+      return logAndReturn(
+        deps.logger,
+        route,
+        startMs,
+        now,
+        jsonResponse({ error: 'Could not process request.' }, 500)
+      );
+    }
+  };
+}
+
+const PLAN_MEDICAL_PATTERN =
+  /\b(doctor|dr\.?|clinic|hospital|dentist|pharmacy|medicine|medication|pill|checkup|check-up|lab|x-ray|therapy|physio|vaccine|appointment)\b/i;
+const PLAN_FAMILY_PATTERN =
+  /\b(family|dinner|lunch|breakfast|birthday|visit|grandchild|grandchildren|daughter|son|sister|brother|friend|wedding|party|reunion|coffee|tea|club|church|mosque|temple)\b/i;
+const PLAN_BILLS_PATTERN =
+  /\b(bill|pay|payment|bank|rent|electric|electricity|water|phone|tax|insurance|grocer|grocery|groceries|market|shop|shopping|post office|errand|repair|plumber)\b/i;
+
+function inferPlanCategory(title: string): CalendarCategory {
+  if (PLAN_MEDICAL_PATTERN.test(title)) return 'Medical';
+  if (PLAN_FAMILY_PATTERN.test(title)) return 'Family & Social';
+  if (PLAN_BILLS_PATTERN.test(title)) return 'Bills & Errands';
+  return 'Daily Routine';
+}
+
+function sanitizeCalendarCandidate(
+  raw: unknown,
+  fallbackId: string
+): Candidate | undefined {
+  if (!isPlainObject(raw)) {
+    return undefined;
+  }
+  if (typeof raw.title !== 'string' || typeof raw.date !== 'string') {
+    return undefined;
+  }
+  const title = raw.title.trim().slice(0, 100).trim();
+  const date = raw.date.trim();
+  if (title.length === 0 || !parsePlainDate(date).ok) {
+    return undefined;
+  }
+
+  let time: string | undefined;
+  if (raw.time !== undefined && raw.time !== null && raw.time !== '') {
+    if (typeof raw.time !== 'string') {
+      return undefined;
+    }
+    const trimmedTime = raw.time.trim();
+    if (!parsePlainTime(trimmedTime).ok) {
+      return undefined;
+    }
+    time = trimmedTime;
+  }
+
+  const category: CalendarCategory =
+    typeof raw.category === 'string' &&
+    VALID_CALENDAR_CATEGORIES.has(raw.category as CalendarCategory)
+      ? (raw.category as CalendarCategory)
+      : inferPlanCategory(title);
+
+  const confidence =
+    typeof raw.confidence === 'number' && Number.isFinite(raw.confidence)
+      ? Math.min(1, Math.max(0, raw.confidence))
+      : 0.75;
+
+  const id =
+    typeof raw.id === 'string' && raw.id.trim().length > 0
+      ? raw.id.trim().slice(0, 80)
+      : fallbackId;
+
+  const candidate: Candidate = {
+    id,
+    title,
+    date,
+    ...(time !== undefined ? { time } : {}),
+    category,
+    confidence,
+  };
+
+  if (typeof raw.location === 'string' && raw.location.trim().length > 0) {
+    candidate.location = raw.location.trim().slice(0, 100);
+  }
+
+  return candidate;
+}
+
+function deduplicatePlanCandidates(candidates: readonly Candidate[]): Candidate[] {
+  const seenDateTimeTitle = new Set<string>();
+  const seenDateTitle = new Set<string>();
+  const usedIds = new Set<string>();
+  const deduped: Candidate[] = [];
+
+  for (const candidate of candidates) {
+    const normTitle = normalizeTitle(candidate.title);
+    const fullKey = `${candidate.date}\u0000${candidate.time ?? ''}\u0000${normTitle}`;
+    const dateTitleKey = `${candidate.date}\u0000${normTitle}`;
+
+    if (seenDateTimeTitle.has(fullKey)) {
+      continue;
+    }
+    if (candidate.time === undefined && seenDateTitle.has(dateTitleKey)) {
+      continue;
+    }
+
+    let uniqueId = candidate.id;
+    let suffix = 2;
+    while (usedIds.has(uniqueId)) {
+      uniqueId = `${candidate.id}-${suffix}`;
+      suffix += 1;
+    }
+    usedIds.add(uniqueId);
+    seenDateTimeTitle.add(fullKey);
+    seenDateTitle.add(dateTitleKey);
+
+    deduped.push(
+      uniqueId === candidate.id ? candidate : { ...candidate, id: uniqueId }
+    );
+  }
+
+  return deduped;
+}
+
+function extractDeterministicPlanCandidates(
+  items: readonly CalendarPlanInputItem[]
+): Candidate[] {
+  const raw: Candidate[] = [];
+  let counter = 1;
+
+  for (const item of items) {
+    const itemCandidates: Candidate[] = [];
+    const ocrResult = extractCalendarCandidatesFromText(item.text, 0.85);
+    if (ocrResult.ok) {
+      for (const c of ocrResult.value) {
+        const sanitized = sanitizeCalendarCandidate(
+          { ...c, id: `device-plan-${counter}` },
+          `device-plan-${counter}`
+        );
+        if (sanitized) {
+          itemCandidates.push(sanitized);
+          counter += 1;
+        }
+      }
+    }
+
+    const detected = detectEvent(item.text);
+    if (detected) {
+      const sameSlot = itemCandidates.find(
+        (c) =>
+          c.date === detected.date &&
+          (c.time === undefined || c.time === detected.time)
+      );
+      if (sameSlot) {
+        if (!sameSlot.time && detected.time) {
+          sameSlot.time = detected.time;
+        }
+        if (!sameSlot.location && detected.location) {
+          sameSlot.location = detected.location;
+        }
+      } else {
+        const sanitized = sanitizeCalendarCandidate(
+          {
+            id: `device-event-${counter}`,
+            title: detected.title,
+            date: detected.date,
+            time: detected.time,
+            ...(detected.location ? { location: detected.location } : {}),
+            category: inferPlanCategory(detected.title),
+            confidence: 0.85,
+          },
+          `device-event-${counter}`
+        );
+        if (sanitized) {
+          itemCandidates.push(sanitized);
+          counter += 1;
+        }
+      }
+    }
+
+    raw.push(...itemCandidates);
+  }
+
+  return deduplicatePlanCandidates(raw);
+}
+
+export function createCalendarPlanPostHandler(
+  deps: CalendarPlanRouteDeps
+): (req: Request) => Promise<Response> {
+  const now = deps.now ?? Date.now;
+  const route = '/api/calendar-plan';
+  const requireAuth = deps.requireAuth !== false;
+  const tokenRegistry = deps.tokenRegistry ?? defaultTokenRegistry;
+  const rateLimiter = deps.rateLimiter ?? defaultRateLimiter;
+
+  return async function POST(req: Request): Promise<Response> {
+    const startMs = now();
+    try {
+      if (requireAuth) {
+        const auth = tokenRegistry.verifyToken(req);
+        if (!auth.ok) {
+          return logAndReturn(
+            deps.logger,
+            route,
+            startMs,
+            now,
+            jsonResponse(auth.body, auth.status)
+          );
+        }
+
+        const rl = rateLimiter.check(auth.tokenHash, now());
+        if (!rl.allowed) {
+          return logAndReturn(
+            deps.logger,
+            route,
+            startMs,
+            now,
+            jsonResponse(rl.body, rl.status)
+          );
+        }
+      }
+
+      const bodyRead = await readUtf8BodyWithLimit(req, MAX_CALENDAR_PLAN_BYTES);
+      if (!bodyRead.ok) {
+        return logAndReturn(
+          deps.logger,
+          route,
+          startMs,
+          now,
+          jsonResponse(
+            {
+              error:
+                bodyRead.kind === 'too-large'
+                  ? 'Too much message text was sent at once. Please scan fewer messages. (field: items)'
+                  : 'The message encoding could not be read. (field: encoding)',
+              field: bodyRead.kind === 'too-large' ? 'items' : 'encoding',
+            },
+            400
+          )
+        );
+      }
+
+      let rawJson: unknown;
+      try {
+        rawJson = JSON.parse(bodyRead.text);
+      } catch {
+        return logAndReturn(
+          deps.logger,
+          route,
+          startMs,
+          now,
+          jsonResponse(
+            {
+              error: 'The request format could not be read. (field: body)',
+              field: 'body',
+            },
+            400
+          )
+        );
+      }
+
+      if (!isPlainObject(rawJson)) {
+        return logAndReturn(
+          deps.logger,
+          route,
+          startMs,
+          now,
+          jsonResponse(
+            {
+              error: 'Please provide messages and today\'s date. (field: body)',
+              field: 'body',
+            },
+            400
+          )
+        );
+      }
+
+      if (
+        typeof rawJson.todayIso !== 'string' ||
+        !parsePlainDate(rawJson.todayIso.trim()).ok
+      ) {
+        return logAndReturn(
+          deps.logger,
+          route,
+          startMs,
+          now,
+          jsonResponse(
+            {
+              error: 'Please provide a valid date in YYYY-MM-DD format. (field: todayIso)',
+              field: 'todayIso',
+            },
+            400
+          )
+        );
+      }
+
+      if (
+        !Array.isArray(rawJson.items) ||
+        rawJson.items.length > MAX_CALENDAR_PLAN_ITEMS
+      ) {
+        return logAndReturn(
+          deps.logger,
+          route,
+          startMs,
+          now,
+          jsonResponse(
+            {
+              error: 'Please send up to 20 messages at a time. (field: items)',
+              field: 'items',
+            },
+            400
+          )
+        );
+      }
+
+      const items: CalendarPlanInputItem[] = [];
+      for (const rawItem of rawJson.items) {
+        if (
+          !isPlainObject(rawItem) ||
+          typeof rawItem.text !== 'string' ||
+          rawItem.text.trim().length === 0 ||
+          rawItem.text.length > MAX_CALENDAR_PLAN_ITEM_TEXT_LENGTH ||
+          hasLoneSurrogate(rawItem.text)
+        ) {
+          return logAndReturn(
+            deps.logger,
+            route,
+            startMs,
+            now,
+            jsonResponse(
+              {
+                error:
+                  'Each message must include readable text up to 5,000 characters. (field: items)',
+                field: 'items',
+              },
+              400
+            )
+          );
+        }
+
+        const cleanItem: CalendarPlanInputItem = {
+          text: rawItem.text,
+        };
+        if (typeof rawItem.id === 'string' && rawItem.id.trim().length > 0) {
+          cleanItem.id = rawItem.id.trim().slice(0, 100);
+        }
+        if (
+          typeof rawItem.sender === 'string' &&
+          rawItem.sender.trim().length > 0 &&
+          !hasLoneSurrogate(rawItem.sender)
+        ) {
+          cleanItem.sender = rawItem.sender.trim().slice(0, 200);
+        }
+        if (
+          typeof rawItem.receivedAt === 'string' &&
+          rawItem.receivedAt.trim().length > 0
+        ) {
+          cleanItem.receivedAt = rawItem.receivedAt.trim().slice(0, 100);
+        }
+        items.push(cleanItem);
+      }
+
+      const todayIso = rawJson.todayIso.trim();
+      const baseline = extractDeterministicPlanCandidates(items);
+
+      let output: CalendarPlanRouteResponse = {
+        candidates: baseline,
+        source: 'device',
+      };
+
+      const envSource = deps.env ?? getProcessEnv();
+      const apiKey = envSource.AI_API_KEY || envSource.GEMINI_API_KEY;
+
+      if (apiKey && deps.calendarPlanner && items.length > 0) {
+        try {
+          const aiRaw = await deps.calendarPlanner({ items, todayIso }, apiKey);
+          if (Array.isArray(aiRaw)) {
+            const sanitizedAi: Candidate[] = [];
+            for (let i = 0; i < aiRaw.length; i += 1) {
+              const sanitized = sanitizeCalendarCandidate(
+                aiRaw[i],
+                `ai-plan-${i + 1}`
+              );
+              if (sanitized) {
+                sanitizedAi.push(sanitized);
+              }
+            }
+
+            if (sanitizedAi.length > 0) {
+              output = {
+                candidates: deduplicatePlanCandidates([
+                  ...sanitizedAi,
+                  ...baseline,
+                ]),
+                source: 'ai',
+              };
+            } else if (baseline.length === 0) {
+              output = {
+                candidates: [],
+                source: 'ai',
+              };
+            }
+          }
+        } catch {
+          output = {
+            candidates: baseline,
+            source: 'device',
+          };
         }
       }
 
