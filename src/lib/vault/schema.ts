@@ -52,6 +52,7 @@ export interface Vault {
   saveSettings(next: Settings): Promise<Result<void, StoreError>>;
   putItem(item: InboxItem): Promise<Result<void, StoreError>>;
   listItems(): Promise<Result<InboxItem[], StoreError>>;
+  deleteItem?(id: string): Promise<Result<void, StoreError>>;
   putEvent(e: CalendarEvent): Promise<Result<void, StoreError>>;
   listEvents(): Promise<Result<CalendarEvent[], StoreError>>;
   deleteEvent(id: string): Promise<Result<void, StoreError>>;

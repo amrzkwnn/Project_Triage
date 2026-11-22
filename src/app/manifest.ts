@@ -18,8 +18,8 @@ export type WebAppManifest = {
 
 export function manifest(): WebAppManifest {
   return {
-    name: 'My Daily Helper',
-    short_name: 'Daily Helper',
+    name: 'Triage',
+    short_name: 'Triage',
     description:
       'A calm, safe digital helper for messages, photos, scam checks, and calendar.',
     start_url: '/',

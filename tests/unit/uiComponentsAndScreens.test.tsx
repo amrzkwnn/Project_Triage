@@ -302,10 +302,10 @@ describe('Shared Accessible UI Components', () => {
 describe('PWA Manifest, App Shell, Home Hub, and My Data Screen', () => {
   it('manifest() returns standalone PWA manifest with 1..45 char name and 192x192 + 512x512 icons', () => {
     const m = manifest();
-    expect(m.name).toBe('My Daily Helper');
+    expect(m.name).toBe('Triage');
     expect(m.name.length).toBeGreaterThanOrEqual(1);
     expect(m.name.length).toBeLessThanOrEqual(45);
-    expect(m.short_name).toBe('Daily Helper');
+    expect(m.short_name).toBe('Triage');
     expect(m.display).toBe('standalone');
     expect(m.start_url).toBe('/');
     expect(m.background_color).toBe('#FAF9F6');

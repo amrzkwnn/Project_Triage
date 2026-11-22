@@ -224,6 +224,39 @@ function createIdbVault(
       }
     },
 
+    async deleteItem(id: string) {
+      const fail = checkFail('remove that message');
+      if (fail) return fail;
+      try {
+        const db = await getDb();
+        await new Promise<void>((resolve, reject) => {
+          const tx = db.transaction(STORE_NAMES.items, 'readwrite');
+          const store = tx.objectStore(STORE_NAMES.items);
+          const req = store.openCursor();
+          req.onsuccess = () => {
+            const cursor = req.result;
+            if (cursor) {
+              const record = cursor.value as InboxItem | undefined;
+              if (record && record.id === id) {
+                cursor.delete();
+              }
+              cursor.continue();
+            }
+          };
+          req.onerror = () => reject(req.error);
+          tx.oncomplete = () => resolve();
+          tx.onerror = () => reject(tx.error);
+          tx.onabort = () => reject(tx.error ?? new Error('Transaction aborted'));
+        });
+        return { ok: true, value: undefined };
+      } catch (err) {
+        return {
+          ok: false,
+          error: makeStoreError(err, 'remove that message'),
+        };
+      }
+    },
+
     async putEvent(e: CalendarEvent) {
       const fail = checkFail('save that event');
       if (fail) return fail;
@@ -674,6 +707,15 @@ function createMemoryVault(
     async listItems() {
       const db = getOrCreateMemoryDb(dbName);
       return { ok: true, value: db.items.map((item) => cloneValue(item)) };
+    },
+
+    async deleteItem(id: string) {
+      const fail = checkFail('remove that message');
+      if (fail) return fail;
+
+      const db = getOrCreateMemoryDb(dbName);
+      db.items = db.items.filter((item) => item.id !== id);
+      return { ok: true, value: undefined };
     },
 
     async putEvent(e: CalendarEvent) {

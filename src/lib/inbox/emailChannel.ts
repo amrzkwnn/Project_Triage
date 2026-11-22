@@ -168,6 +168,7 @@ export async function processEmailBatch(params: {
 
   const existingRes = await params.vault.listItems();
   const existing: InboxItem[] = existingRes.ok ? [...existingRes.value] : [];
+  const dismissedIds = new Set(params.settings.dismissedItemIds ?? []);
 
   const processed: InboxItem[] = [];
   const notices: string[] = [];
@@ -177,6 +178,14 @@ export async function processEmailBatch(params: {
     if (!email || typeof email !== 'object' || email.malformed) {
       skippedCount += 1;
       notices.push(EMAIL_MALFORMED_NOTICE);
+      continue;
+    }
+
+    const rawEmailId = typeof email.id === 'string' ? email.id.trim() : '';
+    if (
+      (rawEmailId.length > 0 && dismissedIds.has(rawEmailId)) ||
+      (typeof email.id === 'string' && dismissedIds.has(email.id))
+    ) {
       continue;
     }
 

@@ -150,7 +150,7 @@ export function AppShell({
                 onClick={(e) => handleNavClick(e, '/')}
                 className="inline-flex min-h-[56px] items-center text-[18px] font-bold tracking-tight text-ink no-underline"
               >
-                My Daily Helper
+                Triage
               </a>
 
               <nav aria-label="Primary" className="flex items-center gap-2">
@@ -236,7 +236,7 @@ export default function RootLayout({
         <meta charSet="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
         <meta name="theme-color" content="#0F766E" />
-        <title>My Daily Helper</title>
+        <title>Triage</title>
       </head>
       <body>
         <AppShell>{children}</AppShell>

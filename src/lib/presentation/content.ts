@@ -24,7 +24,7 @@ export interface PresentationContent {
 
 export const presentationContent: PresentationContent = {
   brand: {
-    name: 'Triage Companion',
+    name: 'Triage',
     tagline: 'Calm daily helper for messages, safety, photos, and plans.',
   },
   problem: {

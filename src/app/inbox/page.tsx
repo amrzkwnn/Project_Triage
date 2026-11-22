@@ -45,6 +45,10 @@ import { filterByTab, filterPromotions } from '@/lib/inbox/order';
 import { normalizeSource, parseIngestQuery } from '@/lib/inbox/parse';
 import { createPrescriptionItem } from '@/lib/inbox/prescription';
 import {
+  dismissItemLocally,
+  useAutoEmailCheck,
+} from '@/lib/inbox/useAutoEmailCheck';
+import {
   createDefaultSettings,
   type Attachment,
   type CalendarEvent,
@@ -138,15 +142,15 @@ const APPLE_SHORTCUT_STEPS = [
           </span>
         </div>
         <p className="text-[18px] text-ink">
-          This lets you forward any WhatsApp, SMS, or Messenger note to My Daily
-          Helper with two taps.
+          This lets you forward any WhatsApp, SMS, or Messenger note to Triage
+          with two taps.
         </p>
       </div>
     ),
   },
   {
     id: 'shortcut-step-3',
-    title: 'Open My Daily Helper with the shared message',
+    title: 'Open Triage with the shared message',
     content: (
       <div className="space-y-3">
         <div className="flex items-center gap-3 rounded-card border border-brand-soft bg-brand-wash p-4">
@@ -158,8 +162,8 @@ const APPLE_SHORTCUT_STEPS = [
           </span>
         </div>
         <p className="text-[18px] text-ink">
-          Whenever you share a message, My Daily Helper shows a preview so you
-          can confirm before saving it.
+          Whenever you share a message, Triage shows a preview so you can
+          confirm before saving it.
         </p>
       </div>
     ),
@@ -746,6 +750,11 @@ export function UnifiedInboxPage({
     }
   }, [initialLoadDone, initialItems, settings, resolvedVault, runEmailCheck]);
 
+  useAutoEmailCheck({
+    enabled: Boolean(settings.channels.email && emailAccount && resolvedVault),
+    onCheck: () => runEmailCheck(settings, { silentOnError: true }),
+  });
+
   React.useEffect(() => {
     if (initialQuery !== undefined) {
       const evaluated = evaluateInitialQuery(initialQuery);
@@ -770,11 +779,16 @@ export function UnifiedInboxPage({
   };
 
   const visibleItems = React.useMemo(() => {
+    const dismissed = new Set(settings.dismissedItemIds ?? []);
+    const active =
+      dismissed.size > 0
+        ? items.filter((item) => !dismissed.has(item.id))
+        : items;
     if (activeTab === 'Promotion') {
-      return filterPromotions(items);
+      return filterPromotions(active);
     }
-    return filterByTab(items, activeTab);
-  }, [items, activeTab]);
+    return filterByTab(active, activeTab);
+  }, [items, activeTab, settings.dismissedItemIds]);
 
   const ingestDraft = async (draft: InboxItemDraft): Promise<boolean> => {
     setActionError(undefined);
@@ -991,6 +1005,46 @@ export function UnifiedInboxPage({
       }
       return next;
     });
+  };
+
+  const handleDismissItem = async (item: InboxItem) => {
+    setActionError(undefined);
+    setPendingCalendarForward((prev) =>
+      prev?.item.id === item.id ? undefined : prev
+    );
+    setPendingFamilyItemId((prev) => (prev === item.id ? undefined : prev));
+
+    const res = await dismissItemLocally({
+      itemId: item.id,
+      settings,
+      vault: resolvedVault,
+    });
+
+    if (!res.ok) {
+      setActionError(res.errorMessage);
+      setStatusMessage(res.errorMessage);
+      return;
+    }
+
+    setSettings(res.settings);
+    setItems((prev) => prev.filter((existing) => existing.id !== item.id));
+    setStatusMessage('Message dismissed and removed from this device.');
+  };
+
+  const handleCompleteShortcutSetup = async () => {
+    const nextSettings: Settings = {
+      ...settings,
+      shortcutSetupCompleted: true,
+    };
+    setSettings(nextSettings);
+    setStatusMessage('Phone shortcut guide completed.');
+    if (resolvedVault) {
+      const res = await resolvedVault.saveSettings(nextSettings);
+      if (!res.ok) {
+        setActionError(res.error.message);
+        setStatusMessage(res.error.message);
+      }
+    }
   };
 
   return (
@@ -1607,6 +1661,14 @@ export function UnifiedInboxPage({
                         Forward Summary to Family
                       </SeniorButton>
                     ) : null}
+
+                    <SeniorButton
+                      variant="secondary"
+                      icon={<X size={20} />}
+                      onClick={() => void handleDismissItem(item)}
+                    >
+                      Dismiss
+                    </SeniorButton>
                   </div>
 
                   {pendingCalendarForward?.item.id === item.id ? (
@@ -1724,21 +1786,21 @@ export function UnifiedInboxPage({
       </section>
 
       {/* Apple Shortcut Setup Wizard */}
-      <section aria-labelledby="shortcut-wizard-heading" className="space-y-4">
-        <h2
-          id="shortcut-wizard-heading"
-          className="text-[22px] font-bold tracking-tight text-ink"
-        >
-          Easy Phone Shortcut Setup
-        </h2>
-        <StepWizard
-          steps={APPLE_SHORTCUT_STEPS}
-          completeLabel="Finish Setup"
-          onComplete={() =>
-            setStatusMessage('Phone shortcut guide completed.')
-          }
-        />
-      </section>
+      {!settings.shortcutSetupCompleted ? (
+        <section aria-labelledby="shortcut-wizard-heading" className="space-y-4">
+          <h2
+            id="shortcut-wizard-heading"
+            className="text-[22px] font-bold tracking-tight text-ink"
+          >
+            Easy Phone Shortcut Setup
+          </h2>
+          <StepWizard
+            steps={APPLE_SHORTCUT_STEPS}
+            completeLabel="Finish Setup"
+            onComplete={() => void handleCompleteShortcutSetup()}
+          />
+        </section>
+      ) : null}
     </div>
   );
 }

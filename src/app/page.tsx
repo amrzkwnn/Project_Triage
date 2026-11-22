@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React from 'react';
 import {
   AlertTriangle,
   Calendar,
@@ -33,6 +33,11 @@ import {
   countEnabledChannels,
   selectHomeDecisions,
 } from '@/lib/home/decisions';
+import { syncEmailsFromRelay } from '@/lib/inbox/emailClient';
+import {
+  dismissItemLocally,
+  useAutoEmailCheck,
+} from '@/lib/inbox/useAutoEmailCheck';
 import {
   type CalendarEvent,
   type InboxItem,
@@ -239,29 +244,31 @@ export function HomeHub({
   onAskFamily,
   onRetry,
 }: HomeHubProps) {
-  const [settings, setSettings] = useState<Settings>(
+  const [settings, setSettings] = React.useState<Settings>(
     initialSettings ?? createDefaultSettings()
   );
-  const [items, setItems] = useState<InboxItem[]>(initialItems ?? []);
-  const [dismissedIds, setDismissedIds] = useState<ReadonlySet<string>>(
+  const [items, setItems] = React.useState<InboxItem[]>(initialItems ?? []);
+  const [dismissedIds, setDismissedIds] = React.useState<ReadonlySet<string>>(
     () => new Set()
   );
-  const [loadError, setLoadError] = useState<string | undefined>(
+  const [loadError, setLoadError] = React.useState<string | undefined>(
     initialLoadError
   );
-  const [showAll, setShowAll] = useState<boolean>(initialShowAll);
-  const [statusMessage, setStatusMessage] = useState<string>('');
-  const [actionError, setActionError] = useState<string | undefined>(undefined);
-  const [pendingFamilyItem, setPendingFamilyItem] = useState<
+  const [showAll, setShowAll] = React.useState<boolean>(initialShowAll);
+  const [statusMessage, setStatusMessage] = React.useState<string>('');
+  const [actionError, setActionError] = React.useState<string | undefined>(
+    undefined
+  );
+  const [pendingFamilyItem, setPendingFamilyItem] = React.useState<
     InboxItem | undefined
   >(undefined);
 
-  const resolvedVault = useMemo(
+  const resolvedVault = React.useMemo(
     () => vault ?? (typeof window !== 'undefined' ? createVault() : undefined),
     [vault]
   );
 
-  const loadFromVault = useCallback(async () => {
+  const loadFromVault = React.useCallback(async () => {
     if (!resolvedVault) return;
     const [settingsRes, itemsRes] = await Promise.all([
       resolvedVault.getSettings(),
@@ -278,18 +285,45 @@ export function HomeHub({
     }
   }, [resolvedVault]);
 
-  useEffect(() => {
+  React.useEffect(() => {
     if (initialSettings === undefined || initialItems === undefined) {
       void loadFromVault();
     }
   }, [initialSettings, initialItems, loadFromVault]);
 
-  const activeItems = useMemo(
-    () => items.filter((item) => !dismissedIds.has(item.id)),
-    [items, dismissedIds]
+  useAutoEmailCheck({
+    enabled: Boolean(settings.channels.email && resolvedVault),
+    onCheck: async () => {
+      if (!resolvedVault) return;
+      const res = await syncEmailsFromRelay({
+        vault: resolvedVault,
+        settings,
+      });
+      if (res.ok && res.stored.length > 0) {
+        const newIds = new Set(res.stored.map((item) => item.id));
+        setItems((prev) => [
+          ...res.stored,
+          ...prev.filter((item) => !newIds.has(item.id)),
+        ]);
+      }
+    },
+  });
+
+  const persistedDismissedIds = React.useMemo(
+    () => new Set(settings.dismissedItemIds ?? []),
+    [settings.dismissedItemIds]
   );
 
-  const selection = useMemo(
+  const activeItems = React.useMemo(
+    () =>
+      items.filter(
+        (item) =>
+          !dismissedIds.has(item.id) && !persistedDismissedIds.has(item.id)
+      ),
+    [items, dismissedIds, persistedDismissedIds]
+  );
+
+  const selection = React.useMemo(
     () => selectHomeDecisions(activeItems, showAll),
     [activeItems, showAll]
   );
@@ -340,14 +374,39 @@ export function HomeHub({
     }
 
     setDismissedIds((prev) => new Set(prev).add(item.id));
+    setItems((prev) => prev.filter((existing) => existing.id !== item.id));
+    if (resolvedVault) {
+      const persistRes = await dismissItemLocally({
+        itemId: item.id,
+        settings,
+        vault: resolvedVault,
+      });
+      if (persistRes.ok) {
+        setSettings(persistRes.settings);
+      }
+    }
     setStatusMessage(res.statusMessage);
   };
 
-  const handleDismiss = (item: InboxItem) => {
+  const handleDismiss = async (item: InboxItem) => {
     setActionError(undefined);
     onDismissDecision?.(item);
     setPendingFamilyItem((prev) => (prev?.id === item.id ? undefined : prev));
+    if (!onDismissDecision && resolvedVault) {
+      const persistRes = await dismissItemLocally({
+        itemId: item.id,
+        settings,
+        vault: resolvedVault,
+      });
+      if (!persistRes.ok) {
+        setActionError(persistRes.errorMessage);
+        setStatusMessage(persistRes.errorMessage);
+        return;
+      }
+      setSettings(persistRes.settings);
+    }
     setDismissedIds((prev) => new Set(prev).add(item.id));
+    setItems((prev) => prev.filter((existing) => existing.id !== item.id));
     setStatusMessage('Item dismissed. Nothing was changed.');
   };
 
@@ -389,7 +448,7 @@ export function HomeHub({
     setStatusMessage(res.statusMessage);
   };
 
-  const enabledChannelCount = useMemo(
+  const enabledChannelCount = React.useMemo(
     () => countEnabledChannels(settings),
     [settings]
   );

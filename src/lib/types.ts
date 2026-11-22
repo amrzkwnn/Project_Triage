@@ -17,7 +17,7 @@ export const ALL_CHANNELS: readonly Channel[] = [
   'photos',
 ] as const;
 
-export type GroupCategory = 'Personal' | 'Family' | 'Others';
+export type GroupCategory = 'Personal' | 'Family' | 'Others' | (string & {});
 
 export type PriorityType = 'Important' | 'Social' | 'Promotion';
 
@@ -47,6 +47,9 @@ export type Settings = {
   familyCodeWord?: string;
   checklist: Record<string, boolean>;
   familyMembers: FamilyMember[];
+  dismissedItemIds?: string[];
+  shortcutSetupCompleted?: boolean;
+  inboxCategories?: string[];
 };
 
 export function createDefaultSettings(): Settings {
@@ -82,6 +85,7 @@ export type DetectedEvent = {
   time: string;
   location?: string;
   title: string;
+  category?: CalendarCategory;
 };
 
 export type Attachment = {
@@ -132,6 +136,11 @@ export type InboxItem = {
   summary?: ClaritySummary;
   detectedEvent?: DetectedEvent;
   scamWarning?: Verdict;
+  mediaCheck?: {
+    result: 'AI signal found' | 'Camera signal found' | 'Cannot tell';
+    signalName?: string;
+    note: string;
+  };
   tier: DecisionTier;
   confidence: number;
   status: 'ok' | 'uncategorized-failed';
