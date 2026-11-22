@@ -77,10 +77,10 @@ describe('Task 3: Live Google Gemini API Provider', () => {
       'test-gemini-key'
     );
 
-    expect(DEFAULT_GEMINI_MODEL).toBe('gemini-2.5-flash');
+    expect(DEFAULT_GEMINI_MODEL).toBe('gemini-3.5-flash-lite');
     expect(calls).toHaveLength(1);
     expect(calls[0].url).toBe(
-      'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent'
+      'https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent'
     );
     expect(calls[0].url).not.toContain('test-gemini-key');
     expect(calls[0].init?.method).toBe('POST');

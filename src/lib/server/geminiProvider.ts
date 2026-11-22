@@ -1,7 +1,7 @@
 import type { Channel } from '@/lib/types';
 import type { DecideAiProvider, DecideOutput } from '@/lib/server/handlers';
 
-export const DEFAULT_GEMINI_MODEL = 'gemini-2.5-flash';
+export const DEFAULT_GEMINI_MODEL = 'gemini-3.5-flash-lite';
 const DEFAULT_GEMINI_TIMEOUT_MS = 8000;
 
 const DEFAULT_GEMINI_PROVIDER_SYMBOL = Symbol.for(
