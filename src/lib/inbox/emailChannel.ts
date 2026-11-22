@@ -14,6 +14,7 @@ import { isDuplicate } from '@/lib/inbox/dedup';
 import { inferCalendarCategory } from '@/lib/calendar/categories';
 import { analyze } from '@/lib/ai/engine';
 import { checkMediaWithAi } from '@/lib/media/aiMediaClient';
+import { extractEmailAddress } from '@/lib/inbox/sender';
 
 const MAX_SCAN_EMAIL_IMAGE_BYTES = 2 * 1024 * 1024;
 const SUPPORTED_SCAN_IMAGE_MIMES = new Set([
@@ -394,6 +395,9 @@ export async function processEmailBatch(params: {
       id: itemId,
       source: 'email',
       ...(draft.sender !== undefined ? { sender: draft.sender } : {}),
+      ...(extractEmailAddress(draft.sender)
+        ? { senderEmail: extractEmailAddress(draft.sender) }
+        : {}),
       text: draft.text,
       attachments: draft.attachments,
       receivedAt: draft.receivedAt,

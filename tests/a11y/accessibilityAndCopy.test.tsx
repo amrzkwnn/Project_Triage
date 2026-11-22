@@ -320,7 +320,9 @@ describe('Accessibility, Touch Targets, Dual-Modality Badges, Copy & Bundle Safe
     expect(inboxHtml).toContain('Forward to Calendar');
     expect(inboxHtml).toContain('Forward to Scam Check');
     expect(inboxHtml).toContain('Forward to AI Image Check');
-    expect(inboxHtml).toContain('Forward Summary to Family');
+    expect(inboxHtml).toContain('Save to');
+    // Tier 2 card: Forward Summary to Family is no longer always shown
+    expect(inboxHtml).not.toContain('Forward Summary to Family');
 
     // AI Media Check: 4-Spot Eye Check Guide, Voice Clone Safety, never "100% Real", Ask Family to Check
     const mediaHtml = renderToStaticMarkup(

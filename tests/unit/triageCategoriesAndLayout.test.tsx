@@ -517,7 +517,7 @@ describe('Task 2: Dedicated Scrollable Mail Layer & Custom Inbox Categories', ()
           expect(savedAfterAdd.value.inboxCategories).toContain('Bills');
         }
 
-        // 2. Move item to "Bills" via per-card category select
+        // 2. Move item to "Bills" via per-card Save to chooser
         const tree3 = harness.render(() =>
           UnifiedInboxPage({
             initialSettings,
@@ -526,18 +526,34 @@ describe('Task 2: Dedicated Scrollable Mail Layer & Custom Inbox Categories', ()
             vault,
           })
         );
-        const moveSelect = findElements(
+        const saveToBtn = findElements(
           tree3,
-          (el) =>
-            el.type === 'select' &&
-            el.props.id === 'inbox-move-category-move-item-1'
+          (el) => el.props['aria-label'] === 'Save to category'
         )[0];
-        expect(moveSelect).toBeDefined();
-        (
-          moveSelect.props.onChange as (e: {
-            target: { value: string };
-          }) => void
-        )({ target: { value: 'Bills' } });
+        expect(saveToBtn).toBeDefined();
+        (saveToBtn.props.onClick as () => void)();
+
+        const tree3b = harness.render(() =>
+          UnifiedInboxPage({
+            initialSettings,
+            initialItems: [item],
+            initialEvents: [],
+            vault,
+          })
+        );
+        const chooser = findElements(
+          tree3b,
+          (el) => el.props['aria-label'] === 'Choose a category to save to'
+        )[0];
+        expect(chooser).toBeDefined();
+        const billsBtn = findElements(
+          chooser,
+          (el) =>
+            typeof el.props.onClick === 'function' &&
+            el.props.children === 'Bills'
+        )[0];
+        expect(billsBtn).toBeDefined();
+        (billsBtn.props.onClick as () => void)();
         await new Promise((r) => setTimeout(r, 15));
 
         const listedAfterMove = await vault.listItems();

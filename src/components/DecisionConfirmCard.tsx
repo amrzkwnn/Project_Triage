@@ -4,6 +4,7 @@ import React from 'react';
 import {
   AlertTriangle,
   Check,
+  FolderPlus,
   ShieldAlert,
   Users,
   X,
@@ -33,6 +34,10 @@ export type DecisionConfirmCardProps = {
   onAskFamily?: () => void;
   showEnableSharingOffer?: boolean;
   onEnableSharing?: () => void;
+  senderEmail?: string;
+  saveCategories?: readonly string[];
+  currentCategory?: string;
+  onSaveToCategory?: (category: string) => void | Promise<void>;
   className?: string;
 };
 
@@ -52,9 +57,19 @@ export function DecisionConfirmCard({
   onAskFamily,
   showEnableSharingOffer = false,
   onEnableSharing,
+  senderEmail,
+  saveCategories,
+  currentCategory,
+  onSaveToCategory,
   className = '',
 }: DecisionConfirmCardProps) {
   const isTier3 = tier === 3;
+  const showSenderEmail =
+    typeof senderEmail === 'string' &&
+    senderEmail.trim().length > 0 &&
+    senderEmail.trim().toLowerCase() !== (title ?? '').trim().toLowerCase();
+  const canSaveTo =
+    !!saveCategories && saveCategories.length > 0 && !!onSaveToCategory;
 
   // Confirmation is minted ONLY inside the Confirm button's click handler.
   // Never mint on render, on Dismiss, or on any timer.
@@ -108,6 +123,15 @@ export function DecisionConfirmCard({
           <h3 className="text-[20px] font-bold text-ink">{title}</h3>
         ) : null}
 
+        {showSenderEmail ? (
+          <p
+            data-sender-email="true"
+            className="break-all text-[15px] font-medium text-muted"
+          >
+            From: {senderEmail}
+          </p>
+        ) : null}
+
         <p className="text-[20px] leading-relaxed text-ink">{summary}</p>
 
         <div className="flex flex-wrap items-center gap-4 pt-1">
@@ -147,7 +171,71 @@ export function DecisionConfirmCard({
             </SeniorButton>
           ) : null}
         </div>
+
+        {canSaveTo ? (
+          <SaveToPicker
+            key={actionId}
+            categories={saveCategories!}
+            currentCategory={currentCategory}
+            onSave={onSaveToCategory!}
+          />
+        ) : null}
       </div>
     </article>
+  );
+}
+
+export function SaveToPicker({
+  categories,
+  currentCategory,
+  onSave,
+}: {
+  categories: readonly string[];
+  currentCategory?: string;
+  onSave: (category: string) => void | Promise<void>;
+}) {
+  const [open, setOpen] = React.useState<boolean>(false);
+
+  return (
+    <div className="space-y-3">
+      <SeniorButton
+        variant="secondary"
+        icon={<FolderPlus size={20} />}
+        aria-expanded={open}
+        onClick={() => setOpen((prev) => !prev)}
+      >
+        Save to
+      </SeniorButton>
+
+      {open ? (
+        <div
+          role="region"
+          aria-label="Choose a category to save to"
+          className="flex flex-wrap items-center gap-3 rounded-card border border-line bg-white/90 p-4"
+        >
+          {categories.map((cat) => (
+            <SeniorButton
+              key={cat}
+              variant="secondary"
+              aria-pressed={cat === currentCategory}
+              className={cat === currentCategory ? 'border-brand bg-brand-soft' : ''}
+              onClick={() => {
+                setOpen(false);
+                void onSave(cat);
+              }}
+            >
+              {cat}
+            </SeniorButton>
+          ))}
+          <SeniorButton
+            variant="secondary"
+            icon={<X size={20} />}
+            onClick={() => setOpen(false)}
+          >
+            Cancel
+          </SeniorButton>
+        </div>
+      ) : null}
+    </div>
   );
 }

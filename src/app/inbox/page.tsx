@@ -36,6 +36,8 @@ import { analyze } from '@/lib/ai/engine';
 import { inferCalendarCategory } from '@/lib/calendar/categories';
 import { isDuplicateEvent } from '@/lib/calendar/snap';
 import { availableForwardActions } from '@/lib/inbox/events';
+import { saveItemToCategoryLocally } from '@/lib/inbox/itemActions';
+import { extractEmailAddress, parseSenderDisplay } from '@/lib/inbox/sender';
 import {
   clearEmailCheckStatus,
   readEmailCheckStatus,
@@ -275,6 +277,9 @@ export async function ingestInboxDraftWithConsent(params: {
     id: itemId,
     source,
     ...(draft.sender ? { sender: draft.sender } : {}),
+    ...(extractEmailAddress(draft.sender)
+      ? { senderEmail: extractEmailAddress(draft.sender) }
+      : {}),
     text: draft.text,
     attachments: draft.attachments,
     receivedAt: draft.receivedAt,
@@ -481,6 +486,9 @@ export function UnifiedInboxPage({
   const [pendingCalendarForward, setPendingCalendarForward] = React.useState<
     { item: InboxItem; event: DetectedEvent; isDuplicate: boolean } | undefined
   >(initialPendingCalendarForward);
+  const [savePickerItemId, setSavePickerItemId] = React.useState<
+    string | undefined
+  >(undefined);
   const [pendingFamilyItemId, setPendingFamilyItemId] = React.useState<
     string | undefined
   >(undefined);
@@ -1154,37 +1162,22 @@ export function UnifiedInboxPage({
       return;
     }
     setActionError(undefined);
-    const updatedItem: InboxItem = {
-      ...item,
-      group: nextCategory,
-    };
-
-    if (resolvedVault) {
-      let deletedOld = false;
-      if (typeof resolvedVault.deleteItem === 'function') {
-        const delRes = await resolvedVault.deleteItem(item.id);
-        if (!delRes.ok) {
-          setActionError(delRes.error.message);
-          setStatusMessage(delRes.error.message);
-          return;
-        }
-        deletedOld = true;
-      }
-      const putRes = await resolvedVault.putItem(updatedItem);
-      if (!putRes.ok) {
-        if (deletedOld) {
-          await resolvedVault.putItem(item);
-        }
-        setActionError(putRes.error.message);
-        setStatusMessage(putRes.error.message);
-        return;
-      }
+    const res = await saveItemToCategoryLocally({
+      item,
+      category: nextCategory,
+      vault: resolvedVault,
+    });
+    if (!res.ok) {
+      setActionError(res.errorMessage);
+      setStatusMessage(res.errorMessage);
+      return;
     }
+    const updatedItem = res.item;
 
     setItems((prev) =>
       prev.map((existing) => (existing.id === item.id ? updatedItem : existing))
     );
-    setStatusMessage(`Moved message to ${nextCategory}.`);
+    setStatusMessage(`Moved message to ${updatedItem.group}.`);
   };
 
   const handleCompleteShortcutSetup = async () => {
@@ -1334,7 +1327,7 @@ export function UnifiedInboxPage({
             (emailAccount || emailConnectionState !== 'disconnected') ? (
               <p className="text-[16px] text-muted tnum">
                 Last checked: {formatCheckedTime(lastCheckStatus.checkedAtIso)}{' '}
-                • {lastCheckStatus.checkedCount}{' '}
+                Ã¢â‚¬Â¢ {lastCheckStatus.checkedCount}{' '}
                 {lastCheckStatus.checkedCount === 1 ? 'email' : 'emails'}{' '}
                 checked, {lastCheckStatus.newCount} new
               </p>
@@ -1754,11 +1747,18 @@ export function UnifiedInboxPage({
                 const isPhotoItem =
                   item.source === 'photos' && item.attachments.length > 0;
                 const isLowConfidenceRx = isPhotoItem && item.tier === 3;
-                const cardCategoryOptions = assignableCategories.includes(
-                  item.group
-                )
-                  ? assignableCategories
-                  : [...assignableCategories, item.group];
+                const cardCategoryOptions = Array.from(
+                  new Map(
+                    [...assignableCategories, item.group]
+                      .filter((cat) => cat.trim().toLowerCase() !== 'all')
+                      .map((cat) => [cat.trim().toLowerCase(), cat] as const)
+                  ).values()
+                );
+                const senderDisplay = parseSenderDisplay(
+                  item.sender,
+                  item.summary?.whoSent,
+                  item.senderEmail
+                );
 
                 return (
                   <article
@@ -1805,30 +1805,6 @@ export function UnifiedInboxPage({
                       </div>
                     ) : null}
 
-                    <div className="flex flex-wrap items-center gap-3">
-                      <label
-                        htmlFor={`inbox-move-category-${item.id}`}
-                        className="text-[16px] font-semibold text-muted"
-                      >
-                        Category:
-                      </label>
-                      <select
-                        id={`inbox-move-category-${item.id}`}
-                        aria-label="Move message to category"
-                        value={item.group}
-                        onChange={(e) =>
-                          void handleMoveItemCategory(item, e.target.value)
-                        }
-                        className="min-h-[56px] rounded-chip border-2 border-line bg-canvas px-4 text-[16px] font-semibold text-ink focus:border-brand"
-                      >
-                        {cardCategoryOptions.map((cat) => (
-                          <option key={cat} value={cat}>
-                            {cat}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-
                   {/* Prescription original photo preview above extracted text */}
                   {isPhotoItem ? (
                     <div className="rounded-card border border-brand-soft bg-canvas p-4 space-y-2">
@@ -1874,8 +1850,16 @@ export function UnifiedInboxPage({
                         <span>AI summary</span>
                       </p>
                       <p className="text-[18px] font-bold text-brand-deep">
-                        {item.summary?.whoSent ?? item.sender ?? 'Unknown sender'}
+                        {senderDisplay.displayName}
                       </p>
+                      {senderDisplay.emailAddress ? (
+                        <p
+                          data-sender-email="true"
+                          className="break-all text-[15px] font-medium text-muted"
+                        >
+                          From: {senderDisplay.emailAddress}
+                        </p>
+                      ) : null}
                       <p className="text-[20px] leading-relaxed text-ink">
                         {item.summary?.text ?? item.text}
                       </p>
@@ -1991,7 +1975,23 @@ export function UnifiedInboxPage({
                         })()
                       : null}
 
-                    {actions.includes('shareWithFamily') ? (
+                    <SeniorButton
+                      variant="secondary"
+                      icon={<FolderPlus size={20} />}
+                      aria-expanded={savePickerItemId === item.id}
+                      aria-label="Save to category"
+                      onClick={() =>
+                        setSavePickerItemId((prev) =>
+                          prev === item.id ? undefined : item.id
+                        )
+                      }
+                    >
+                      Save to
+                    </SeniorButton>
+
+                    {actions.includes('shareWithFamily') &&
+                    item.tier === 3 &&
+                    canShowAskFamily(settings) ? (
                       <SeniorButton
                         variant="secondary"
                         icon={<Users size={20} />}
@@ -2010,6 +2010,36 @@ export function UnifiedInboxPage({
                     </SeniorButton>
                   </div>
 
+                  {savePickerItemId === item.id ? (
+                    <div
+                      role="region"
+                      aria-label="Choose a category to save to"
+                      className="flex flex-wrap items-center gap-3 rounded-card border border-line bg-canvas p-4"
+                    >
+                      {cardCategoryOptions.map((cat) => (
+                        <SeniorButton
+                          key={cat}
+                          variant="secondary"
+                          aria-pressed={cat === item.group}
+                          className={cat === item.group ? 'border-brand bg-brand-soft' : ''}
+                          onClick={() => {
+                            setSavePickerItemId(undefined);
+                            void handleMoveItemCategory(item, cat);
+                          }}
+                        >
+                          {cat}
+                        </SeniorButton>
+                      ))}
+                      <SeniorButton
+                        variant="secondary"
+                        icon={<X size={20} />}
+                        onClick={() => setSavePickerItemId(undefined)}
+                      >
+                        Cancel
+                      </SeniorButton>
+                    </div>
+                  ) : null}
+
                   {pendingCalendarForward?.item.id === item.id ? (
                     <div
                       role="region"
@@ -2025,12 +2055,12 @@ export function UnifiedInboxPage({
                       <p className="text-[18px] text-ink tnum">
                         Date: {pendingCalendarForward.event.date}
                         {pendingCalendarForward.event.time
-                          ? ` • Time: ${pendingCalendarForward.event.time}`
+                          ? ` Ã¢â‚¬Â¢ Time: ${pendingCalendarForward.event.time}`
                           : ''}
                         {pendingCalendarForward.event.location
-                          ? ` • Location: ${pendingCalendarForward.event.location}`
+                          ? ` Ã¢â‚¬Â¢ Location: ${pendingCalendarForward.event.location}`
                           : ''}
-                        {` • Category: ${
+                        {` Ã¢â‚¬Â¢ Category: ${
                           pendingCalendarForward.event.category ??
                           inferCalendarCategory(
                             `${pendingCalendarForward.event.title} ${pendingCalendarForward.item.text}`

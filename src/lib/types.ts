@@ -128,6 +128,8 @@ export type InboxItem = {
   id: string;
   source: Channel;
   sender?: string;
+  senderEmail?: string;
+  homeHandled?: boolean;
   text: string;
   attachments: Attachment[];
   receivedAt: string;
