@@ -120,7 +120,9 @@ export async function callDecideProxy(
         if (cleaned.length >= 20) break;
       }
       if (cleaned.length > 0) {
-        headers['x-inbox-categories'] = cleaned.join(',');
+        headers['x-inbox-categories'] = cleaned
+          .map((c) => encodeURIComponent(c))
+          .join(',');
       }
     }
 

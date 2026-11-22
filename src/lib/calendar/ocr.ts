@@ -1,3 +1,4 @@
+import { inferCalendarCategory } from '@/lib/calendar/categories';
 import { parsePlainDate, parsePlainTime } from '@/lib/calendar/dates';
 import {
   LOW_CONFIDENCE_THRESHOLD,
@@ -32,20 +33,6 @@ const NO_EVENTS_MESSAGE =
 const DATE_PATTERN = /(?<!\d)(\d{4})[-/](\d{2})[-/](\d{2})(?!\d)/g;
 const TIME_24H_PATTERN = /(?<!\d:)(?<!\d)(\d{2}:\d{2})(?::[0-5]\d)?(?!\d)/g;
 const TIME_12H_PATTERN = /\b(1[0-2]|0?[1-9])(?::([0-5]\d))?\s*(am|pm)\b/gi;
-
-const MEDICAL_PATTERN =
-  /\b(doctor|dr\.?|clinic|hospital|dentist|pharmacy|medicine|medication|pill|checkup|check-up|lab|x-ray|therapy|physio|vaccine|appointment)\b/i;
-const FAMILY_SOCIAL_PATTERN =
-  /\b(family|dinner|lunch|breakfast|birthday|visit|grandchild|grandchildren|daughter|son|sister|brother|friend|wedding|party|reunion|coffee|tea|club|church|mosque|temple)\b/i;
-const BILLS_ERRANDS_PATTERN =
-  /\b(bill|pay|payment|bank|rent|electric|electricity|water|phone|tax|insurance|grocer|grocery|groceries|market|shop|shopping|post office|errand|repair|plumber)\b/i;
-
-function inferCalendarCategory(title: string): CalendarCategory {
-  if (MEDICAL_PATTERN.test(title)) return 'Medical';
-  if (FAMILY_SOCIAL_PATTERN.test(title)) return 'Family & Social';
-  if (BILLS_ERRANDS_PATTERN.test(title)) return 'Bills & Errands';
-  return 'Daily Routine';
-}
 
 function extractFirstValidDate(
   line: string

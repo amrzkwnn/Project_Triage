@@ -2,6 +2,7 @@ import type { CalendarCategory, CalendarEvent, Settings } from '@/lib/types';
 import type { Vault } from '@/lib/vault/schema';
 import { mayCallAi } from '@/lib/vault/consent';
 import { buildAuditEntry } from '@/lib/vault/audit';
+import { inferCalendarCategory } from '@/lib/calendar/categories';
 import { parsePlainDate, parsePlainTime } from '@/lib/calendar/dates';
 import {
   extractCalendarCandidatesFromText,
@@ -31,20 +32,6 @@ const VALID_CALENDAR_CATEGORIES = new Set<CalendarCategory>([
   'Bills & Errands',
   'Daily Routine',
 ]);
-
-const MEDICAL_PATTERN =
-  /\b(doctor|dr\.?|clinic|hospital|dentist|pharmacy|medicine|medication|pill|checkup|check-up|lab|x-ray|therapy|physio|vaccine|appointment)\b/i;
-const FAMILY_PATTERN =
-  /\b(family|dinner|lunch|breakfast|birthday|visit|grandchild|grandchildren|daughter|son|sister|brother|friend|wedding|party|reunion|coffee|tea|club|church|mosque|temple)\b/i;
-const BILLS_PATTERN =
-  /\b(bill|pay|payment|bank|rent|electric|electricity|water|phone|tax|insurance|grocer|grocery|groceries|market|shop|shopping|post office|errand|repair|plumber)\b/i;
-
-function inferCategory(title: string): CalendarCategory {
-  if (MEDICAL_PATTERN.test(title)) return 'Medical';
-  if (FAMILY_PATTERN.test(title)) return 'Family & Social';
-  if (BILLS_PATTERN.test(title)) return 'Bills & Errands';
-  return 'Daily Routine';
-}
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return (
@@ -86,7 +73,7 @@ function sanitizeCandidate(
     typeof raw.category === 'string' &&
     VALID_CALENDAR_CATEGORIES.has(raw.category as CalendarCategory)
       ? (raw.category as CalendarCategory)
-      : inferCategory(title);
+      : inferCalendarCategory(title);
 
   const confidence =
     typeof raw.confidence === 'number' && Number.isFinite(raw.confidence)
@@ -193,7 +180,7 @@ function extractDeviceCandidates(
             date: detected.date,
             time: detected.time,
             ...(detected.location ? { location: detected.location } : {}),
-            category: inferCategory(detected.title),
+            category: detected.category ?? inferCalendarCategory(detected.title),
             confidence: 0.85,
           },
           `device-event-${counter}`

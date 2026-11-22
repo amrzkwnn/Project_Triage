@@ -25,6 +25,9 @@ import { DEFAULT_DEV_TOKEN, TokenRegistry } from '@/lib/server/auth';
 import { createRateLimiter } from '@/lib/server/rateLimit';
 import { createSafeLogger } from '@/lib/server/safeLog';
 import { analyze } from '@/lib/ai/engine';
+import { callDecideProxy } from '@/lib/ai/proxyClient';
+import { extractCalendarCandidatesFromText } from '@/lib/calendar/ocr';
+import { autoPlanCalendarFromItems } from '@/lib/calendar/aiPlanClient';
 import { processEmailBatch } from '@/lib/inbox/emailChannel';
 import { confirmFromTap } from '@/lib/actions/confirmation';
 import { executeHomeDefaultConfirm } from '@/app/page';
@@ -875,6 +878,149 @@ describe('Task 4: Accurate AI & Deterministic Categorization for Inbox & Calenda
       expect(htmlOn).toContain('Auto-Pick Category with AI');
       expect(htmlOn).not.toContain('Turn On AI Scanning');
       expect(stripHtml(htmlOn)).not.toMatch(BANNED_JARGON);
+    });
+  });
+
+  describe('5. Final-Review Fixes: Header encoding for custom categories & unified calendar category inference', () => {
+    it('encodes non-ASCII and comma custom category names in x-inbox-categories header without ByteString TypeError and decodes them accurately in POST /api/decide', async () => {
+      const receivedAllowedCategories: Array<readonly string[] | undefined> = [];
+      let lastStatus = 0;
+
+      const handler = createDecidePostHandler({
+        tokenRegistry: new TokenRegistry(),
+        rateLimiter: createRateLimiter(),
+        logger: createSafeLogger(() => {}),
+        now: () => 1_750_000_000_000,
+        env: { GEMINI_API_KEY: 'TEST_FINAL_FIX_KEY' },
+        aiProvider: async (_item, _apiKey, options) => {
+          receivedAllowedCategories.push(options?.allowedCategories);
+          return {
+            summary: {
+              fromApp: 'WhatsApp',
+              whoSent: 'Mom',
+              actionNeeded: 'Reply when free',
+              text: 'Family message in Chinese.',
+            },
+            group: '家人',
+            priority: 'Social',
+            confidence: 0.94,
+          };
+        },
+      });
+
+      const fetchFn: typeof fetch = vi.fn(async (input, init) => {
+        // Real WHATWG Request/Headers constructor enforces ISO-8859-1 ByteString header values
+        const req = new Request(`https://companion.example${String(input)}`, init);
+        const res = await handler(req);
+        lastStatus = res.status;
+        return res;
+      });
+
+      const proxyResult = await callDecideProxy(
+        { source: 'whatsappForward', text: '晚上回家吃饭吗？' },
+        {
+          fetchFn,
+          token: DEFAULT_DEV_TOKEN,
+          allowedCategories: ['Personal', '家人', 'Home, Garden'],
+        }
+      );
+
+      expect(proxyResult.ok).toBe(true);
+      expect(lastStatus).toBe(200);
+      expect(receivedAllowedCategories).toEqual([
+        ['Personal', '家人', 'Home, Garden'],
+      ]);
+      if (proxyResult.ok) {
+        expect(proxyResult.value.group).toBe('家人');
+      }
+
+      // Malformed percent-encoding in x-inbox-categories degrades gracefully instead of throwing
+      const malformedRes = await handler(
+        new Request('https://companion.example/api/decide', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${DEFAULT_DEV_TOKEN}`,
+            'x-inbox-categories': '%E0%A4%A,Personal,100% Real',
+          },
+          body: JSON.stringify({
+            item: { channel: 'email', text: 'Checking malformed header' },
+          }),
+        })
+      );
+      expect(malformedRes.status).toBe(200);
+      expect(receivedAllowedCategories[1]).toEqual([
+        '%E0%A4%A',
+        'Personal',
+        '100% Real',
+      ]);
+    });
+
+    it('unifies calendar category inference across Paper Calendar Snap (ocr.ts) and on-device Auto-Plan (aiPlanClient.ts)', async () => {
+      const snapText =
+        '2026-11-25 19:00 Dinner appointment with Sarah\n2026-11-26 10:00 Bank visit for passbook';
+      const ocrRes = extractCalendarCandidatesFromText(snapText, 0.9);
+      expect(ocrRes.ok).toBe(true);
+      if (ocrRes.ok) {
+        expect(ocrRes.value).toHaveLength(2);
+        const dinner = ocrRes.value.find((c) =>
+          c.title.includes('Dinner appointment with Sarah')
+        );
+        const bank = ocrRes.value.find((c) =>
+          c.title.includes('Bank visit for passbook')
+        );
+        expect(dinner?.category).toBe('Family & Social');
+        expect(dinner?.category).not.toBe('Medical');
+        expect(bank?.category).toBe('Bills & Errands');
+        expect(bank?.category).not.toBe('Family & Social');
+      }
+
+      const planRes = await autoPlanCalendarFromItems({
+        items: [
+          {
+            id: 'msg-dinner',
+            text: '2026-11-25 19:00 Dinner appointment with Sarah',
+          },
+          {
+            id: 'msg-bank',
+            text: '2026-11-26 10:00 Bank visit for passbook',
+          },
+          {
+            id: 'msg-detect-fallback',
+            text: 'Dinner appointment with Sarah on 2026-11-27 at 9:00 am and 19:00',
+          },
+        ],
+        existingEvents: [],
+        todayIso: '2026-11-22',
+        settings: {
+          ...createDefaultSettings(),
+          allowAiReading: false,
+        },
+      });
+
+      expect(planRes.ok).toBe(true);
+      if (planRes.ok) {
+        expect(planRes.checkedBy).toBe('device');
+        const dinner = planRes.candidates.find(
+          (c) =>
+            c.date === '2026-11-25' &&
+            c.title.includes('Dinner appointment with Sarah')
+        );
+        const bank = planRes.candidates.find(
+          (c) =>
+            c.date === '2026-11-26' &&
+            c.title.includes('Bank visit for passbook')
+        );
+        const detectEventDinner = planRes.candidates.find(
+          (c) => c.date === '2026-11-27' && c.time === '19:00'
+        );
+        expect(dinner?.category).toBe('Family & Social');
+        expect(dinner?.category).not.toBe('Medical');
+        expect(bank?.category).toBe('Bills & Errands');
+        expect(bank?.category).not.toBe('Family & Social');
+        expect(detectEventDinner?.category).toBe('Family & Social');
+        expect(detectEventDinner?.category).not.toBe('Medical');
+      }
     });
   });
 });

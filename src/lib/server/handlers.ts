@@ -885,7 +885,7 @@ function deterministicDecide(item: {
   return output;
 }
 
-const CONTROL_CHAR_PATTERN = /[\u0000-\u001F\u007F]/;
+const CONTROL_CHAR_PATTERN = /[\u0000-\u001F\u007F]/g;
 
 function parseInboxCategoriesHeader(rawHeader: string | null): string[] {
   if (!rawHeader || rawHeader.trim().length === 0) {
@@ -894,12 +894,24 @@ function parseInboxCategoriesHeader(rawHeader: string | null): string[] {
   const seen = new Set<string>();
   const categories: string[] = [];
   for (const part of rawHeader.split(',')) {
-    const cleaned = part.trim().replace(/\s+/g, ' ');
+    const rawTrimmed = part.trim();
+    if (rawTrimmed.length === 0) {
+      continue;
+    }
+    let decoded: string;
+    try {
+      decoded = decodeURIComponent(rawTrimmed);
+    } catch {
+      decoded = rawTrimmed;
+    }
+    const cleaned = decoded
+      .replace(CONTROL_CHAR_PATTERN, '')
+      .trim()
+      .replace(/\s+/g, ' ');
     if (
       cleaned.length === 0 ||
       cleaned.length > MAX_INBOX_CATEGORY_LENGTH ||
-      hasLoneSurrogate(cleaned) ||
-      CONTROL_CHAR_PATTERN.test(cleaned)
+      hasLoneSurrogate(cleaned)
     ) {
       continue;
     }
