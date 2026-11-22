@@ -62,6 +62,7 @@ export interface Vault {
   listBlobs(): Promise<Result<Record<string, Uint8Array>, StoreError>>;
   saveOAuthToken(rec: OAuthTokenRecord): Promise<Result<void, StoreError>>;
   listOAuthTokens(): Promise<Result<OAuthTokenRecord[], StoreError>>;
+  deleteOAuthToken?(id: string): Promise<Result<void, StoreError>>;
   exportAll(): Promise<Result<string, StoreError>>;
   importAll(text: string): Promise<Result<void, ImportError>>;
   eraseAll(): Promise<Result<void, StoreError>>;

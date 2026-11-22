@@ -14,6 +14,270 @@ export const DEFAULT_DEV_BEARER_TOKEN = 'dev-senior-token-1';
 
 export type EmailProvider = 'Gmail' | 'Outlook';
 
+export type EmailConnectionCheckResult =
+  | { status: 'connected'; account: string; provider: EmailProvider }
+  | {
+      status: 'expired';
+      account: string;
+      provider: EmailProvider;
+      message: string;
+    }
+  | { status: 'disconnected'; message: string }
+  | {
+      status: 'offline';
+      account: string;
+      provider: EmailProvider;
+      message: string;
+    };
+
+export type EmailCheckStatusSnapshot = {
+  account?: string;
+  provider?: EmailProvider;
+  checkedAtIso: string;
+  checkedCount: number;
+  newCount: number;
+  status: 'ok' | 'expired' | 'error';
+  message: string;
+};
+
+const EMAIL_CHECK_STATUS_STORAGE_KEY = 'bersama_email_check_status_v1';
+
+export function saveEmailCheckStatus(snapshot: EmailCheckStatusSnapshot): void {
+  if (typeof window === 'undefined' || !window.localStorage) {
+    return;
+  }
+  try {
+    window.localStorage.setItem(
+      EMAIL_CHECK_STATUS_STORAGE_KEY,
+      JSON.stringify(snapshot)
+    );
+  } catch {
+    // Ignore storage errors (private mode / quota)
+  }
+}
+
+export function readEmailCheckStatus(): EmailCheckStatusSnapshot | undefined {
+  if (typeof window === 'undefined' || !window.localStorage) {
+    return undefined;
+  }
+  try {
+    const raw = window.localStorage.getItem(EMAIL_CHECK_STATUS_STORAGE_KEY);
+    if (!raw) {
+      return undefined;
+    }
+    const parsed = JSON.parse(raw) as Partial<EmailCheckStatusSnapshot>;
+    if (
+      !parsed ||
+      typeof parsed !== 'object' ||
+      typeof parsed.checkedAtIso !== 'string' ||
+      typeof parsed.checkedCount !== 'number' ||
+      typeof parsed.newCount !== 'number' ||
+      (parsed.status !== 'ok' &&
+        parsed.status !== 'expired' &&
+        parsed.status !== 'error') ||
+      typeof parsed.message !== 'string'
+    ) {
+      return undefined;
+    }
+    return {
+      ...(typeof parsed.account === 'string' ? { account: parsed.account } : {}),
+      ...(parsed.provider === 'Gmail' || parsed.provider === 'Outlook'
+        ? { provider: parsed.provider }
+        : {}),
+      checkedAtIso: parsed.checkedAtIso,
+      checkedCount: parsed.checkedCount,
+      newCount: parsed.newCount,
+      status: parsed.status,
+      message: parsed.message,
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+export function clearEmailCheckStatus(): void {
+  if (typeof window === 'undefined' || !window.localStorage) {
+    return;
+  }
+  try {
+    window.localStorage.removeItem(EMAIL_CHECK_STATUS_STORAGE_KEY);
+  } catch {
+    // Ignore storage errors
+  }
+}
+
+function hasRequiredMailReadScope(
+  provider: EmailProvider,
+  scopes: readonly string[]
+): boolean {
+  const normalized = scopes.map((s) => s.trim().toLowerCase());
+  if (provider === 'Gmail') {
+    return normalized.some(
+      (s) =>
+        s === 'gmail.readonly' ||
+        s === 'https://www.googleapis.com/auth/gmail.readonly'
+    );
+  }
+  return normalized.some(
+    (s) => s === 'mail.read' || s === 'https://graph.microsoft.com/mail.read'
+  );
+}
+
+export async function verifyCloudEmailConnection(params: {
+  record?: OAuthTokenRecord;
+  fetchFn?: typeof fetch;
+}): Promise<EmailConnectionCheckResult> {
+  const record = params.record;
+  if (
+    !record ||
+    (record.provider !== 'Gmail' && record.provider !== 'Outlook') ||
+    typeof record.token !== 'string' ||
+    record.token.trim().length === 0 ||
+    record.token.trim() === 'readonly-session'
+  ) {
+    return {
+      status: 'disconnected',
+      message:
+        'No email account is connected yet. Sign in with Gmail or Outlook to read your emails here.',
+    };
+  }
+
+  const provider: EmailProvider = record.provider;
+  const account = record.account;
+  const accessToken = record.token.trim();
+
+  const fetchFn = params.fetchFn ?? globalThis.fetch;
+  if (typeof fetchFn !== 'function') {
+    return {
+      status: 'offline',
+      account,
+      provider,
+      message:
+        'We could not check your email connection right now. Please check your internet connection and try again.',
+    };
+  }
+
+  const probeUrl =
+    provider === 'Gmail'
+      ? 'https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=1'
+      : 'https://graph.microsoft.com/v1.0/me/messages?$top=1&$select=id';
+
+  try {
+    const response = await fetchFn(probeUrl, {
+      method: 'GET',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+      },
+    });
+
+    if (response.status === 401) {
+      return {
+        status: 'expired',
+        account,
+        provider,
+        message: EMAIL_RECONNECT_MESSAGE,
+      };
+    }
+
+    if (response.status === 403) {
+      return {
+        status: 'expired',
+        account,
+        provider,
+        message:
+          'We do not have permission to read your emails right now. Please sign in again and allow read-only email access.',
+      };
+    }
+
+    if (response.ok) {
+      return {
+        status: 'connected',
+        account,
+        provider,
+      };
+    }
+
+    return {
+      status: 'offline',
+      account,
+      provider,
+      message:
+        'We could not reach your email right now. Your saved emails are still here.',
+    };
+  } catch {
+    return {
+      status: 'offline',
+      account,
+      provider,
+      message:
+        'We could not reach your email right now. Please check your internet connection and try again.',
+    };
+  }
+}
+
+export async function disconnectEmailAccount(params: {
+  vault?: Pick<Vault, 'listOAuthTokens' | 'deleteOAuthToken' | 'saveSettings'>;
+  settings: Settings;
+}): Promise<
+  | { ok: true; settings: Settings; message: string }
+  | { ok: false; errorMessage: string }
+> {
+  let nextSettings: Settings = {
+    ...params.settings,
+    channels: {
+      ...params.settings.channels,
+      email: false,
+    },
+  };
+
+  if (params.vault) {
+    if (
+      typeof params.vault.listOAuthTokens === 'function' &&
+      typeof params.vault.deleteOAuthToken === 'function'
+    ) {
+      const tokensRes = await params.vault.listOAuthTokens();
+      if (!tokensRes.ok) {
+        return {
+          ok: false,
+          errorMessage: tokensRes.error.message,
+        };
+      }
+      for (const rec of tokensRes.value) {
+        const delRes = await params.vault.deleteOAuthToken(rec.id);
+        if (!delRes.ok) {
+          return {
+            ok: false,
+            errorMessage: delRes.error.message,
+          };
+        }
+      }
+    }
+
+    const toggleRes = await setChannelToggle(
+      params.vault as Vault,
+      params.settings,
+      'email',
+      false
+    );
+    if (!toggleRes.ok) {
+      return {
+        ok: false,
+        errorMessage: toggleRes.error.message,
+      };
+    }
+    nextSettings = toggleRes.settings;
+  }
+
+  clearEmailCheckStatus();
+
+  return {
+    ok: true,
+    settings: nextSettings,
+    message:
+      'Email account disconnected. Your saved emails are still here, and no new emails will be checked.',
+  };
+}
+
 const DEFAULT_SAMPLE_EMAIL = {
   sender: 'City Clinic <appointments@cityclinic.org>',
   subject: 'Clinic Appointment Reminder',
@@ -356,6 +620,18 @@ export async function completeCloudLoginCallback(params: {
     };
   }
 
+  if (
+    parsed.grantedScopes &&
+    parsed.grantedScopes.length > 0 &&
+    !hasRequiredMailReadScope(parsed.provider, parsed.grantedScopes)
+  ) {
+    return {
+      ok: false,
+      errorMessage:
+        'Email reading permission was not ticked during sign-in. Please sign in again and allow read-only email access.',
+    };
+  }
+
   let resolvedEmail: string | undefined;
   const fetchFn = params.fetchFn ?? globalThis.fetch;
   if (typeof fetchFn === 'function') {
@@ -394,6 +670,26 @@ export async function completeCloudLoginCallback(params: {
     (parsed.emailHint && isValidEmailAddress(parsed.emailHint)
       ? parsed.emailHint
       : defaultFallbackEmail(parsed.provider));
+
+  const verification = await verifyCloudEmailConnection({
+    record: {
+      id: 'email-account-primary',
+      account: emailAddress,
+      provider: parsed.provider,
+      token: parsed.accessToken,
+    },
+    fetchFn,
+  });
+
+  if (
+    verification.status === 'expired' ||
+    verification.status === 'disconnected'
+  ) {
+    return {
+      ok: false,
+      errorMessage: verification.message,
+    };
+  }
 
   return connectReadOnlyEmailAccount({
     vault: params.vault,
@@ -469,7 +765,7 @@ export async function sendSampleEmailToRelay(params?: {
 }
 
 type CloudFetchOutcome =
-  | { status: 'ok'; stored: InboxItem[] }
+  | { status: 'ok'; stored: InboxItem[]; checkedCount: number }
   | { status: 'expired' }
   | { status: 'error' };
 
@@ -563,7 +859,11 @@ async function fetchCloudProviderEmails(params: {
         vault,
       });
 
-      return { status: 'ok', stored: batchResult.processed };
+      return {
+        status: 'ok',
+        stored: batchResult.processed,
+        checkedCount: rawEmails.length,
+      };
     }
 
     if (record.provider === 'Gmail') {
@@ -595,75 +895,100 @@ async function fetchCloudProviderEmails(params: {
       const messageRefs = Array.isArray(listData?.messages)
         ? listData.messages
         : [];
-      const rawEmails: RawIncomingEmail[] = [];
+      const validIds = messageRefs
+        .map((ref) =>
+          ref && typeof ref.id === 'string' ? ref.id.trim() : ''
+        )
+        .filter((id) => id.length > 0);
 
-      for (const ref of messageRefs) {
-        if (!ref || typeof ref.id !== 'string' || ref.id.trim().length === 0) {
-          continue;
-        }
-        const msgId = ref.id.trim();
-        const detailRes = await fetchFn(
-          `https://gmail.googleapis.com/gmail/v1/users/me/messages/${encodeURIComponent(
-            msgId
-          )}?format=metadata&metadataHeaders=From&metadataHeaders=Subject&metadataHeaders=Date`,
-          {
-            method: 'GET',
-            headers: authHeaders,
-          }
-        );
+      type GmailDetailResult =
+        | { kind: 'ok'; email: RawIncomingEmail }
+        | { kind: 'expired' }
+        | { kind: 'skip' };
 
-        if (detailRes.status === 401 || detailRes.status === 403) {
-          await processEmailBatch({
-            settings,
-            tokenStatus: 'expired',
-            emails: [],
-            vault,
-          });
-          return { status: 'expired' };
-        }
-
-        if (!detailRes.ok) {
-          continue;
-        }
-
-        const detail = (await detailRes.json()) as {
-          id?: unknown;
-          snippet?: unknown;
-          internalDate?: unknown;
-          payload?: {
-            headers?: Array<{ name?: unknown; value?: unknown }>;
-          };
-        };
-
-        const headers = Array.isArray(detail?.payload?.headers)
-          ? detail.payload.headers
-          : [];
-        const findHeader = (target: string): string | undefined => {
-          const found = headers.find(
-            (h) =>
-              typeof h?.name === 'string' &&
-              h.name.toLowerCase() === target.toLowerCase() &&
-              typeof h?.value === 'string'
+      const detailResults = await Promise.all(
+        validIds.map(async (msgId): Promise<GmailDetailResult> => {
+          const detailRes = await fetchFn(
+            `https://gmail.googleapis.com/gmail/v1/users/me/messages/${encodeURIComponent(
+              msgId
+            )}?format=metadata&metadataHeaders=From&metadataHeaders=Subject&metadataHeaders=Date`,
+            {
+              method: 'GET',
+              headers: authHeaders,
+            }
           );
-          return typeof found?.value === 'string' ? found.value.trim() : undefined;
-        };
 
-        const fromHeader = findHeader('From');
-        const subjectHeader = findHeader('Subject');
-        const dateHeader = findHeader('Date');
-        const receivedAt =
-          toIsoTimestamp(dateHeader) ?? toIsoTimestamp(detail?.internalDate);
+          if (detailRes.status === 401 || detailRes.status === 403) {
+            return { kind: 'expired' };
+          }
 
-        rawEmails.push({
-          id: typeof detail?.id === 'string' && detail.id.trim().length > 0 ? detail.id.trim() : msgId,
-          ...(fromHeader ? { from: fromHeader.slice(0, 256) } : {}),
-          ...(subjectHeader ? { subject: subjectHeader } : {}),
-          ...(typeof detail?.snippet === 'string'
-            ? { body: detail.snippet }
-            : {}),
-          ...(receivedAt ? { receivedAt } : {}),
+          if (!detailRes.ok) {
+            return { kind: 'skip' };
+          }
+
+          const detail = (await detailRes.json()) as {
+            id?: unknown;
+            snippet?: unknown;
+            internalDate?: unknown;
+            payload?: {
+              headers?: Array<{ name?: unknown; value?: unknown }>;
+            };
+          };
+
+          const headers = Array.isArray(detail?.payload?.headers)
+            ? detail.payload.headers
+            : [];
+          const findHeader = (target: string): string | undefined => {
+            const found = headers.find(
+              (h) =>
+                typeof h?.name === 'string' &&
+                h.name.toLowerCase() === target.toLowerCase() &&
+                typeof h?.value === 'string'
+            );
+            return typeof found?.value === 'string'
+              ? found.value.trim()
+              : undefined;
+          };
+
+          const fromHeader = findHeader('From');
+          const subjectHeader = findHeader('Subject');
+          const dateHeader = findHeader('Date');
+          const receivedAt =
+            toIsoTimestamp(dateHeader) ?? toIsoTimestamp(detail?.internalDate);
+
+          return {
+            kind: 'ok',
+            email: {
+              id:
+                typeof detail?.id === 'string' && detail.id.trim().length > 0
+                  ? detail.id.trim()
+                  : msgId,
+              ...(fromHeader ? { from: fromHeader.slice(0, 256) } : {}),
+              ...(subjectHeader ? { subject: subjectHeader } : {}),
+              ...(typeof detail?.snippet === 'string'
+                ? { body: detail.snippet }
+                : {}),
+              ...(receivedAt ? { receivedAt } : {}),
+            },
+          };
+        })
+      );
+
+      if (detailResults.some((r) => r.kind === 'expired')) {
+        await processEmailBatch({
+          settings,
+          tokenStatus: 'expired',
+          emails: [],
+          vault,
         });
+        return { status: 'expired' };
       }
+
+      const rawEmails = detailResults
+        .filter(
+          (r): r is { kind: 'ok'; email: RawIncomingEmail } => r.kind === 'ok'
+        )
+        .map((r) => r.email);
 
       const batchResult = await processEmailBatch({
         settings,
@@ -672,7 +997,11 @@ async function fetchCloudProviderEmails(params: {
         vault,
       });
 
-      return { status: 'ok', stored: batchResult.processed };
+      return {
+        status: 'ok',
+        stored: batchResult.processed,
+        checkedCount: validIds.length,
+      };
     }
 
     return { status: 'error' };
@@ -702,6 +1031,7 @@ export async function syncEmailsFromRelay(params: {
   | {
       ok: true;
       stored: InboxItem[];
+      checkedCount: number;
       message: string;
       reconnectRequired?: boolean;
       reconnectMessage?: string;
@@ -726,6 +1056,7 @@ export async function syncEmailsFromRelay(params: {
   }
 
   let cloudStored: InboxItem[] = [];
+  let cloudCheckedCount = 0;
   let cloudFetchSucceeded = false;
   let cloudFetchFailed = false;
 
@@ -752,6 +1083,7 @@ export async function syncEmailsFromRelay(params: {
           return {
             ok: true,
             stored: [],
+            checkedCount: 0,
             message: EMAIL_RECONNECT_MESSAGE,
             reconnectRequired: true,
             reconnectMessage: EMAIL_RECONNECT_MESSAGE,
@@ -760,6 +1092,7 @@ export async function syncEmailsFromRelay(params: {
 
         if (cloudOutcome.status === 'ok') {
           cloudStored = cloudOutcome.stored;
+          cloudCheckedCount = cloudOutcome.checkedCount;
           cloudFetchSucceeded = true;
         } else if (cloudOutcome.status === 'error') {
           cloudFetchFailed = true;
@@ -784,6 +1117,7 @@ export async function syncEmailsFromRelay(params: {
         return {
           ok: true,
           stored: deduped,
+          checkedCount: cloudCheckedCount,
           message: formatNewEmailMessage(deduped.length),
         };
       }
@@ -845,6 +1179,7 @@ export async function syncEmailsFromRelay(params: {
     return {
       ok: true,
       stored: merged,
+      checkedCount: cloudCheckedCount + pulledItems.length,
       message: formatNewEmailMessage(merged.length),
     };
   } catch {
@@ -853,6 +1188,7 @@ export async function syncEmailsFromRelay(params: {
       return {
         ok: true,
         stored: deduped,
+        checkedCount: cloudCheckedCount,
         message: formatNewEmailMessage(deduped.length),
       };
     }

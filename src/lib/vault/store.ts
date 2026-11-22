@@ -449,6 +449,37 @@ function createIdbVault(
       }
     },
 
+    async deleteOAuthToken(id: string) {
+      const fail = checkFail('disconnect your email account');
+      if (fail) return fail;
+      try {
+        const db = await getDb();
+        await new Promise<void>((resolve, reject) => {
+          const tx = db.transaction(STORE_NAMES.meta, 'readwrite');
+          const store = tx.objectStore(STORE_NAMES.meta);
+          const getReq = store.get('oauthTokens');
+          getReq.onsuccess = () => {
+            const existing =
+              (getReq.result as Record<string, OAuthTokenRecord> | undefined) ??
+              {};
+            if (Object.prototype.hasOwnProperty.call(existing, id)) {
+              delete existing[id];
+              store.put(existing, 'oauthTokens');
+            }
+          };
+          tx.oncomplete = () => resolve();
+          tx.onerror = () => reject(tx.error);
+          tx.onabort = () => reject(tx.error ?? new Error('Transaction aborted'));
+        });
+        return { ok: true, value: undefined };
+      } catch (err) {
+        return {
+          ok: false,
+          error: makeStoreError(err, 'disconnect your email account'),
+        };
+      }
+    },
+
     async exportAll() {
       return exportDocument(vault);
     },
@@ -732,6 +763,15 @@ function createMemoryVault(
           cloneValue(rec)
         ),
       };
+    },
+
+    async deleteOAuthToken(id: string) {
+      const fail = checkFail('disconnect your email account');
+      if (fail) return fail;
+
+      const db = getOrCreateMemoryDb(dbName);
+      db.oauthTokens.delete(id);
+      return { ok: true, value: undefined };
     },
 
     async exportAll() {
