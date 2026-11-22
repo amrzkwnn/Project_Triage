@@ -1259,5 +1259,248 @@ describe('Task 2: Truthful Connection Badge, Disconnect, Auto-Check, Live Inbox 
         harness.restore();
       }
     });
+
+    it('produces byte-for-byte identical SSR and initial client render even when localStorage has a prior check snapshot (no hydration mismatch)', () => {
+      const onSettings = {
+        ...createDefaultSettings(),
+        channels: { ...createDefaultSettings().channels, email: true },
+      };
+
+      // 1. SSR render (window is undefined)
+      vi.stubGlobal('window', undefined);
+      let ssrHtml = '';
+      try {
+        ssrHtml = renderToStaticMarkup(
+          <UnifiedInboxPage initialSettings={onSettings} initialItems={[]} />
+        );
+      } finally {
+        vi.unstubAllGlobals();
+      }
+
+      // 2. Client initial render (before useEffect) with populated localStorage
+      const fakeStorage = createFakeLocalStorage();
+      vi.stubGlobal('window', { localStorage: fakeStorage });
+      try {
+        saveEmailCheckStatus({
+          account: 'mary.tan@gmail.com',
+          provider: 'Gmail',
+          checkedAtIso: '2026-11-22T04:00:00.000Z',
+          checkedCount: 5,
+          newCount: 2,
+          status: 'ok',
+          message: '2 new emails arrived in your Unified Inbox.',
+        });
+
+        const clientInitialHtml = renderToStaticMarkup(
+          <UnifiedInboxPage initialSettings={onSettings} initialItems={[]} />
+        );
+
+        expect(clientInitialHtml).toBe(ssrHtml);
+        expect(clientInitialHtml).toContain('Email Not Connected');
+        expect(clientInitialHtml).not.toContain('Connected (Gmail)');
+        expect(clientInitialHtml).not.toContain('Last checked');
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    });
+
+    it('probes live connection when channels.email is false so UnifiedInboxPage and MyDataPage agree on Reconnect Needed (and hides stale counts when disconnected)', async () => {
+      const vault = createVault({ dbName: 'test_cross_page_agreement_v1' });
+      const offSettings = createDefaultSettings(); // channels.email === false
+      await vault.saveSettings(offSettings);
+      await vault.saveOAuthToken({
+        id: 'email-account-primary',
+        account: 'mary.tan@gmail.com',
+        provider: 'Gmail',
+        token: 'ya29.expired-401-token',
+      });
+
+      const fakeStorage = createFakeLocalStorage();
+      const fetchSpy = vi
+        .spyOn(globalThis, 'fetch')
+        .mockImplementation((async () =>
+          new Response('Unauthorized', { status: 401 })) as typeof fetch);
+
+      vi.stubGlobal('window', {
+        location: {
+          origin: 'http://localhost:5173',
+          pathname: '/inbox',
+          search: '',
+          hash: '',
+          assign: vi.fn(),
+        },
+        history: { replaceState: vi.fn() },
+        localStorage: fakeStorage,
+      });
+
+      // Seed stale "ok" status in localStorage — neither page may trust it when live probe returns 401
+      saveEmailCheckStatus({
+        account: 'mary.tan@gmail.com',
+        provider: 'Gmail',
+        checkedAtIso: '2026-11-22T04:00:00.000Z',
+        checkedCount: 4,
+        newCount: 1,
+        status: 'ok',
+        message: '1 new email arrived in your Unified Inbox.',
+      });
+
+      try {
+        let inboxBadges = '';
+        const inboxHarness = createHookHarness();
+        try {
+          inboxHarness.render(() => UnifiedInboxPage({ vault }));
+          await new Promise((r) => setTimeout(r, 50));
+          const inboxTree = inboxHarness.render(() => UnifiedInboxPage({ vault }));
+          inboxBadges = JSON.stringify(
+            findElements(inboxTree, (el) => el.props['data-badge'] === 'true')
+          );
+        } finally {
+          inboxHarness.restore();
+        }
+
+        let myDataBadges = '';
+        const myDataHarness = createHookHarness();
+        try {
+          myDataHarness.render(() => MyDataPage({ vault }));
+          await new Promise((r) => setTimeout(r, 50));
+          const myDataTree = myDataHarness.render(() => MyDataPage({ vault }));
+          myDataBadges = JSON.stringify(
+            findElements(myDataTree, (el) => el.props['data-badge'] === 'true')
+          );
+        } finally {
+          myDataHarness.restore();
+        }
+
+        expect(inboxBadges).toContain('Reconnect Needed');
+        expect(inboxBadges).not.toContain('Connected (Gmail)');
+        expect(myDataBadges).toContain('Reconnect Needed');
+        expect(myDataBadges).not.toContain('Connected (Gmail)');
+
+        // Now test disconnected vault with only a readonly-session stub + stale localStorage snapshot
+        const stubVault = createVault({ dbName: 'test_inbox_stale_status_v1' });
+        await stubVault.saveSettings(offSettings);
+        await stubVault.saveOAuthToken({
+          id: 'stale-stub-1',
+          account: 'old.stub@gmail.com',
+          provider: 'Gmail',
+          token: 'readonly-session',
+        });
+
+        const stubHarness = createHookHarness();
+        try {
+          stubHarness.render(() => UnifiedInboxPage({ vault: stubVault }));
+          await new Promise((r) => setTimeout(r, 50));
+          const stubTree = stubHarness.render(() =>
+            UnifiedInboxPage({ vault: stubVault })
+          );
+          const stubSerialized = JSON.stringify(stubTree);
+          expect(stubSerialized).toContain('Email Not Connected');
+          expect(stubSerialized).not.toContain('Last checked');
+          expect(stubSerialized).not.toContain('old.stub@gmail.com');
+        } finally {
+          stubHarness.restore();
+        }
+      } finally {
+        vi.unstubAllGlobals();
+        fetchSpy.mockRestore();
+      }
+    });
+
+    it('MyDataPage cleans all empty/readonly-session stubs across multiple records and selects the valid cloud account matching UnifiedInboxPage', async () => {
+      const fetchSpy = vi
+        .spyOn(globalThis, 'fetch')
+        .mockImplementation((async () =>
+          new Response(JSON.stringify({ messages: [] }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          })) as typeof fetch);
+
+      vi.stubGlobal('window', {
+        location: {
+          origin: 'http://localhost:5173',
+          pathname: '/my-data',
+          search: '',
+          hash: '',
+          assign: vi.fn(),
+        },
+        history: { replaceState: vi.fn() },
+        localStorage: createFakeLocalStorage(),
+      });
+
+      try {
+        // Case A: [stub, validRecord]
+        const vaultA = createVault({ dbName: 'test_mydata_stub_then_valid_v1' });
+        await vaultA.saveSettings(createDefaultSettings());
+        await vaultA.saveOAuthToken({
+          id: 'a-stub',
+          account: 'stub@gmail.com',
+          provider: 'Gmail',
+          token: 'readonly-session',
+        });
+        await vaultA.saveOAuthToken({
+          id: 'b-valid',
+          account: 'real.senior@gmail.com',
+          provider: 'Gmail',
+          token: 'ya29.real-valid-token',
+        });
+
+        const harnessA = createHookHarness();
+        try {
+          harnessA.render(() => MyDataPage({ vault: vaultA }));
+          await new Promise((r) => setTimeout(r, 50));
+          const treeA = harnessA.render(() => MyDataPage({ vault: vaultA }));
+
+          const badgesA = JSON.stringify(
+            findElements(treeA, (el) => el.props['data-badge'] === 'true')
+          );
+          expect(badgesA).toContain('Connected (Gmail): real.senior@gmail.com');
+
+          const tokensAfterA = await vaultA.listOAuthTokens();
+          expect(tokensAfterA.ok && tokensAfterA.value.map((t) => t.id)).toEqual([
+            'b-valid',
+          ]);
+        } finally {
+          harnessA.restore();
+        }
+
+        // Case B: [validRecord, trailingStub]
+        const vaultB = createVault({ dbName: 'test_mydata_valid_then_stub_v1' });
+        await vaultB.saveSettings(createDefaultSettings());
+        await vaultB.saveOAuthToken({
+          id: 'a-valid',
+          account: 'real.senior@gmail.com',
+          provider: 'Gmail',
+          token: 'ya29.real-valid-token',
+        });
+        await vaultB.saveOAuthToken({
+          id: 'b-stub',
+          account: 'trailing.stub@gmail.com',
+          provider: 'Gmail',
+          token: 'readonly-session',
+        });
+
+        const harnessB = createHookHarness();
+        try {
+          harnessB.render(() => MyDataPage({ vault: vaultB }));
+          await new Promise((r) => setTimeout(r, 50));
+          const treeB = harnessB.render(() => MyDataPage({ vault: vaultB }));
+
+          const badgesB = JSON.stringify(
+            findElements(treeB, (el) => el.props['data-badge'] === 'true')
+          );
+          expect(badgesB).toContain('Connected (Gmail): real.senior@gmail.com');
+
+          const tokensAfterB = await vaultB.listOAuthTokens();
+          expect(tokensAfterB.ok && tokensAfterB.value.map((t) => t.id)).toEqual([
+            'a-valid',
+          ]);
+        } finally {
+          harnessB.restore();
+        }
+      } finally {
+        vi.unstubAllGlobals();
+        fetchSpy.mockRestore();
+      }
+    });
   });
 });

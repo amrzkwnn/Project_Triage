@@ -209,24 +209,29 @@ export function MyDataPage({
           return;
         }
 
-        const primaryRecord = storedTokens[0];
-        const trimmedToken =
-          typeof primaryRecord.token === 'string'
-            ? primaryRecord.token.trim()
-            : '';
-
-        if (
-          trimmedToken.length === 0 ||
-          trimmedToken === 'readonly-session'
-        ) {
-          for (const rec of storedTokens) {
-            const recToken =
-              typeof rec.token === 'string' ? rec.token.trim() : '';
-            if (recToken.length === 0 || recToken === 'readonly-session') {
-              await resolvedVault?.deleteOAuthToken?.(rec.id);
-            }
+        let removedAnyStub = false;
+        for (const rec of storedTokens) {
+          const recToken =
+            typeof rec.token === 'string' ? rec.token.trim() : '';
+          if (recToken.length === 0 || recToken === 'readonly-session') {
+            await resolvedVault?.deleteOAuthToken?.(rec.id);
+            removedAnyStub = true;
           }
-          if (cancelled) return;
+        }
+        if (cancelled) return;
+
+        const validRecord = storedTokens.find(
+          (rec) =>
+            (rec.provider === 'Gmail' || rec.provider === 'Outlook') &&
+            typeof rec.token === 'string' &&
+            rec.token.trim().length > 0 &&
+            rec.token.trim() !== 'readonly-session'
+        );
+
+        if (!validRecord) {
+          if (removedAnyStub) {
+            clearEmailCheckStatus();
+          }
           setConnectedAccount(undefined);
           setConnectionState('disconnected');
           return;
@@ -234,20 +239,20 @@ export function MyDataPage({
 
         setConnectionState('checking');
         const verification = await verifyCloudEmailConnection({
-          record: primaryRecord,
+          record: validRecord,
         });
         if (cancelled) return;
 
         if (verification.status === 'connected') {
-          setConnectedAccount(primaryRecord);
+          setConnectedAccount(validRecord);
           setConnectionState('connected');
           setEmailError(undefined);
         } else if (verification.status === 'expired') {
-          setConnectedAccount(primaryRecord);
+          setConnectedAccount(validRecord);
           setConnectionState('expired');
           setEmailError(verification.message);
         } else if (verification.status === 'offline') {
-          setConnectedAccount(primaryRecord);
+          setConnectedAccount(validRecord);
           setConnectionState('offline');
           setEmailNotice(verification.message);
         } else {
@@ -335,6 +340,7 @@ export function MyDataPage({
               status: 'error',
               message: checkRes.errorMessage,
             });
+            setConnectionState('offline');
             setEmailNotice(undefined);
             setEmailError(checkRes.errorMessage);
             setStatusMessage(checkRes.errorMessage);

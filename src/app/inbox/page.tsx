@@ -33,9 +33,11 @@ import { analyze } from '@/lib/ai/engine';
 import { isDuplicateEvent } from '@/lib/calendar/snap';
 import { availableForwardActions } from '@/lib/inbox/events';
 import {
+  clearEmailCheckStatus,
   readEmailCheckStatus,
   saveEmailCheckStatus,
   syncEmailsFromRelay,
+  verifyCloudEmailConnection,
   type EmailCheckStatusSnapshot,
   type EmailProvider,
 } from '@/lib/inbox/emailClient';
@@ -490,24 +492,10 @@ export function UnifiedInboxPage({
   >(undefined);
   const [lastCheckStatus, setLastCheckStatus] = React.useState<
     EmailCheckStatusSnapshot | undefined
-  >(() => readEmailCheckStatus());
+  >(undefined);
   const [emailConnectionState, setEmailConnectionState] = React.useState<
     'disconnected' | 'connected' | 'expired' | 'error'
-  >(() => {
-    if (initialReconnectMessage) return 'expired';
-    const snap = readEmailCheckStatus();
-    if (snap?.status === 'expired') return 'expired';
-    if (snap?.status === 'error') return 'error';
-    if (
-      snap?.status === 'ok' &&
-      snap.account &&
-      snap.provider &&
-      (initialSettings?.channels.email ?? false)
-    ) {
-      return 'connected';
-    }
-    return 'disconnected';
-  });
+  >(initialReconnectMessage ? 'expired' : 'disconnected');
   const autoCheckedEmailRef = React.useRef<boolean>(false);
 
   const resolvedVault = React.useMemo(
@@ -669,37 +657,73 @@ export function UnifiedInboxPage({
       if (eventsRes.ok) {
         setExistingEvents(eventsRes.value);
       }
-      const hydratedStatus = readEmailCheckStatus();
-      setLastCheckStatus(hydratedStatus);
-
       if (tokensRes.ok) {
+        let removedAnyStub = false;
         for (const rec of tokensRes.value) {
           const trimmed = typeof rec.token === 'string' ? rec.token.trim() : '';
           if (trimmed.length === 0 || trimmed === 'readonly-session') {
             await resolvedVault.deleteOAuthToken?.(rec.id);
+            removedAnyStub = true;
           }
         }
+
         const validAccount = findValidCloudAccount(tokensRes.value);
-        setEmailAccount(validAccount);
         if (!validAccount) {
+          if (removedAnyStub) {
+            clearEmailCheckStatus();
+          }
+          setEmailAccount(undefined);
+          setLastCheckStatus(undefined);
           setEmailConnectionState(
             initialReconnectMessage ? 'expired' : 'disconnected'
           );
-        } else if (hydratedStatus?.status === 'expired') {
-          setEmailConnectionState('expired');
-        } else if (hydratedStatus?.status === 'error') {
-          setEmailConnectionState('error');
-        } else if (
-          hydratedStatus?.status === 'ok' &&
-          hydratedStatus.account === validAccount.account
-        ) {
-          setEmailConnectionState('connected');
+        } else {
+          setEmailAccount(validAccount);
+          const hydratedStatus = readEmailCheckStatus();
+          const matchingStatus =
+            hydratedStatus &&
+            (!hydratedStatus.account ||
+              hydratedStatus.account === validAccount.account)
+              ? hydratedStatus
+              : undefined;
+
+          const effectiveEmailOn = settingsRes.ok
+            ? settingsRes.value.channels.email
+            : (initialSettings?.channels.email ?? false);
+          const willAutoCheck =
+            initialItems === undefined &&
+            effectiveEmailOn &&
+            !autoCheckedEmailRef.current;
+
+          if (willAutoCheck) {
+            setLastCheckStatus(matchingStatus);
+          } else {
+            const verification = await verifyCloudEmailConnection({
+              record: validAccount,
+            });
+            if (verification.status === 'connected') {
+              setEmailConnectionState('connected');
+              setReconnectMessage(undefined);
+              setLastCheckStatus(matchingStatus);
+            } else if (verification.status === 'expired') {
+              setEmailConnectionState('expired');
+              setReconnectMessage(verification.message);
+              setLastCheckStatus(matchingStatus);
+            } else if (verification.status === 'offline') {
+              setEmailConnectionState('error');
+              setLastCheckStatus(matchingStatus);
+            } else {
+              setEmailAccount(undefined);
+              setLastCheckStatus(undefined);
+              setEmailConnectionState('disconnected');
+            }
+          }
         }
       }
     } finally {
       setInitialLoadDone(true);
     }
-  }, [resolvedVault, initialReconnectMessage]);
+  }, [resolvedVault, initialReconnectMessage, initialItems, initialSettings]);
 
   React.useEffect(() => {
     if (needsInitialLoad) {
@@ -1092,7 +1116,8 @@ export function UnifiedInboxPage({
               )}
             </div>
 
-            {lastCheckStatus ? (
+            {lastCheckStatus &&
+            (emailAccount || emailConnectionState !== 'disconnected') ? (
               <p className="text-[16px] text-muted tnum">
                 Last checked: {formatCheckedTime(lastCheckStatus.checkedAtIso)}{' '}
                 • {lastCheckStatus.checkedCount}{' '}
