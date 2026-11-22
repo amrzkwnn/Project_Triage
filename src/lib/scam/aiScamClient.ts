@@ -41,7 +41,8 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 
 function parseServerScamVerdict(
   raw: unknown,
-  baseline: ScamCheckOutput
+  baseline: ScamCheckOutput,
+  enforceBaselineMonotonicity = true
 ): { verdict: ScamCheckOutput; checkedBy: 'ai' | 'device' } | null {
   if (!isPlainObject(raw)) {
     return null;
@@ -81,19 +82,30 @@ function parseServerScamVerdict(
   const baselineSeverity = VERDICT_SEVERITY[baseline.value];
   const candidateSeverity = VERDICT_SEVERITY[candidateValue];
 
-  // Safety monotonicity: never downgrade a deterministic danger or caution verdict
-  if (candidateSeverity < baselineSeverity) {
+  // Safety monotonicity: never downgrade a deterministic text danger or caution verdict
+  if (enforceBaselineMonotonicity && candidateSeverity < baselineSeverity) {
     return { verdict: baseline, checkedBy: 'device' };
   }
 
-  const mergedFlags = Array.from(new Set([...baseline.flags, ...flags]));
+  // On screenshot-only checks, never accept an uninspected device-level 'safe' response
+  if (
+    !enforceBaselineMonotonicity &&
+    raw.source !== 'ai' &&
+    candidateValue === 'safe'
+  ) {
+    return { verdict: baseline, checkedBy: 'device' };
+  }
+
+  const mergedFlags = enforceBaselineMonotonicity
+    ? Array.from(new Set([...baseline.flags, ...flags]))
+    : flags;
   const instruction =
     typeof raw.instruction === 'string' && raw.instruction.trim().length > 0
       ? raw.instruction.trim().slice(0, 150)
       : candidateValue === 'danger'
         ? 'Do not click or pay'
         : candidateValue === 'caution'
-          ? 'Hang up and call back using a number saved in your contacts'
+          ? 'Be careful and verify before clicking or paying'
           : undefined;
 
   const showAskFamily =
@@ -101,7 +113,9 @@ function parseServerScamVerdict(
       ? true
       : typeof raw.showAskFamily === 'boolean'
         ? raw.showAskFamily
-        : baseline.showAskFamily;
+        : enforceBaselineMonotonicity
+          ? baseline.showAskFamily
+          : candidateValue === 'caution';
 
   const verdict: ScamCheckOutput = {
     value: candidateValue,
@@ -136,25 +150,30 @@ export async function checkMessageWithAi(params: {
     }
   | { ok: false; message: string }
 > {
+  const hasText = params.text.trim().length > 0;
   const hasImage =
     typeof params.imageBase64 === 'string' &&
     params.imageBase64.trim().length > 0 &&
     typeof params.imageMime === 'string' &&
     params.imageMime.trim().length > 0;
-  const baseline: ScamCheckOutput =
-    params.text.trim().length > 0
-      ? checkText(params.text)
-      : {
-          value: 'safe',
-          flags: [],
-          reasons: [
-            'No clear scam signs were found on this device. Turn on AI Helper for screenshot reading.',
-          ],
-          showAskFamily: false,
-        };
+
+  const aiAllowed = mayCallAi(params.settings);
+  const baseline: ScamCheckOutput = hasText
+    ? checkText(params.text)
+    : {
+        value: 'caution',
+        flags: [],
+        reasons: [
+          aiAllowed
+            ? 'We could not read the words in this screenshot right now. Please paste the message text or ask a trusted family member before clicking or paying.'
+            : 'This screenshot was not read because AI scanning is OFF. Paste the message text, turn on AI scanning, or ask a trusted family member before clicking or paying.',
+        ],
+        instruction: 'Be careful and verify before clicking or paying',
+        showAskFamily: true,
+      };
 
   // Consent gate: AI Reading OFF -> zero network calls, zero audit writes
-  if (!mayCallAi(params.settings)) {
+  if (!aiAllowed) {
     return {
       ok: true,
       verdict: baseline,
@@ -242,7 +261,7 @@ export async function checkMessageWithAi(params: {
     }
 
     const parsed: unknown = await response.json();
-    const resolved = parseServerScamVerdict(parsed, baseline);
+    const resolved = parseServerScamVerdict(parsed, baseline, hasText);
     if (!resolved) {
       return {
         ok: true,

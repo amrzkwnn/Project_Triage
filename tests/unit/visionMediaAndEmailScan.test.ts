@@ -243,6 +243,85 @@ describe('Task 3: Gemini Vision Image Detection, Screenshot Scam Check & Email I
       expect(res.scamWarning?.value).toBe('danger');
     });
 
+    it('validates and sanitizes parsed.scamWarning inside createGeminiMediaChecker (strips 100% real and drops malformed scamWarning)', async () => {
+      // 1. Valid scamWarning with forbidden "100% real" in reasons + invalid flag
+      const sanitizedChecker = createGeminiMediaChecker({
+        fetchFn: vi.fn(async () =>
+          new Response(
+            JSON.stringify({
+              candidates: [
+                {
+                  content: {
+                    parts: [
+                      {
+                        text: JSON.stringify({
+                          result: 'AI signal found',
+                          note: 'Edited visual details found.',
+                          scamWarning: {
+                            value: 'danger',
+                            flags: ['payment', 'invalid-flag', 'payment'],
+                            reasons: [
+                              'Fake transfer slip pretending to be 100% real.',
+                            ],
+                          },
+                        }),
+                      },
+                    ],
+                  },
+                },
+              ],
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } }
+          )
+        ),
+      });
+
+      const res1 = await sanitizedChecker(
+        { imageBase64: SAMPLE_JPEG_BASE64, mimeType: 'image/jpeg' },
+        'KEY_1'
+      );
+      expect(res1.scamWarning).toBeDefined();
+      expect(res1.scamWarning!.flags).toEqual(['payment']);
+      expect(res1.scamWarning!.reasons[0]).not.toMatch(/100%\s*real/i);
+
+      // 2. Malformed scamWarning (invalid value / missing reasons) -> omitted completely
+      const malformedChecker = createGeminiMediaChecker({
+        fetchFn: vi.fn(async () =>
+          new Response(
+            JSON.stringify({
+              candidates: [
+                {
+                  content: {
+                    parts: [
+                      {
+                        text: JSON.stringify({
+                          result: 'Cannot tell',
+                          note: 'Cannot tell from this photo.',
+                          scamWarning: {
+                            value: 'bogus-verdict',
+                            flags: ['urgency'],
+                            reasons: [],
+                          },
+                        }),
+                      },
+                    ],
+                  },
+                },
+              ],
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } }
+          )
+        ),
+      });
+
+      const res2 = await malformedChecker(
+        { imageBase64: SAMPLE_JPEG_BASE64, mimeType: 'image/jpeg' },
+        'KEY_2'
+      );
+      expect(res2.result).toBe('Cannot tell');
+      expect(res2.scamWarning).toBeUndefined();
+    });
+
     it('returns empty object safely on HTTP 500, malformed JSON, or network error', async () => {
       const http500 = createGeminiMediaChecker({
         fetchFn: vi.fn(
@@ -598,6 +677,106 @@ describe('Task 3: Gemini Vision Image Detection, Screenshot Scam Check & Email I
       expect(json.value).toBe('danger');
       expect(json.showAskFamily).toBe(true);
     });
+
+    it('POST /api/scam-check NEVER returns green safe on screenshot-only fallback when AI fails or is unconfigured (returns caution + showAskFamily)', async () => {
+      // 1. Unconfigured API key on screenshot-only request
+      const unconfiguredHandler = createScamCheckPostHandler({
+        tokenRegistry: new TokenRegistry(),
+        rateLimiter: createRateLimiter(),
+        logger: createSafeLogger(() => {}),
+        env: {},
+      });
+
+      const resUnconf = await unconfiguredHandler(
+        new Request('http://localhost:5173/api/scam-check', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${DEFAULT_DEV_TOKEN}`,
+          },
+          body: JSON.stringify({
+            text: '',
+            imageBase64: SAMPLE_JPEG_BASE64,
+            imageMime: 'image/jpeg',
+          }),
+        })
+      );
+      expect(resUnconf.status).toBe(200);
+      const bodyUnconf = (await resUnconf.json()) as ScamCheckOutput & {
+        source: 'ai' | 'device';
+      };
+      expect(bodyUnconf.source).toBe('device');
+      expect(bodyUnconf.value).toBe('caution');
+      expect(bodyUnconf.showAskFamily).toBe(true);
+      expect(bodyUnconf.instruction).toBe(
+        'Be careful and verify before clicking or paying'
+      );
+      expect(bodyUnconf.reasons.join(' ')).not.toMatch(BANNED_JARGON);
+
+      // 2. Provider throws on screenshot-only request -> caution (never safe)
+      const crashingHandler = createScamCheckPostHandler({
+        tokenRegistry: new TokenRegistry(),
+        rateLimiter: createRateLimiter(),
+        logger: createSafeLogger(() => {}),
+        env: { GEMINI_API_KEY: 'KEY_CRASH' },
+        scamChecker: async () => {
+          throw new Error('Timeout');
+        },
+      });
+      const resCrash = await crashingHandler(
+        new Request('http://localhost:5173/api/scam-check', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${DEFAULT_DEV_TOKEN}`,
+          },
+          body: JSON.stringify({
+            text: '',
+            imageBase64: SAMPLE_JPEG_BASE64,
+            imageMime: 'image/jpeg',
+          }),
+        })
+      );
+      const bodyCrash = (await resCrash.json()) as ScamCheckOutput & {
+        source: 'ai' | 'device';
+      };
+      expect(bodyCrash.source).toBe('device');
+      expect(bodyCrash.value).toBe('caution');
+      expect(bodyCrash.showAskFamily).toBe(true);
+
+      // 3. Genuine AI safe verdict on harmless screenshot IS still accepted
+      const safeAiHandler = createScamCheckPostHandler({
+        tokenRegistry: new TokenRegistry(),
+        rateLimiter: createRateLimiter(),
+        logger: createSafeLogger(() => {}),
+        env: { GEMINI_API_KEY: 'KEY_SAFE_SHOT' },
+        scamChecker: async () => ({
+          value: 'safe',
+          flags: [],
+          reasons: ['This screenshot shows a normal family lunch invitation.'],
+          showAskFamily: false,
+        }),
+      });
+      const resSafe = await safeAiHandler(
+        new Request('http://localhost:5173/api/scam-check', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${DEFAULT_DEV_TOKEN}`,
+          },
+          body: JSON.stringify({
+            text: '',
+            imageBase64: SAMPLE_JPEG_BASE64,
+            imageMime: 'image/jpeg',
+          }),
+        })
+      );
+      const bodySafe = (await resSafe.json()) as ScamCheckOutput & {
+        source: 'ai' | 'device';
+      };
+      expect(bodySafe.source).toBe('ai');
+      expect(bodySafe.value).toBe('safe');
+    });
   });
 
   describe('checkMediaWithAi & checkMessageWithAi (Property 7 Consent & Audit-Before-Read)', () => {
@@ -765,6 +944,39 @@ describe('Task 3: Gemini Vision Image Detection, Screenshot Scam Check & Email I
         imageBase64: SAMPLE_JPEG_BASE64,
         imageMime: 'image/jpeg',
       });
+
+      // Screenshot-only HTTP 500 when allowAiReading is ON -> caution + showAskFamily, does NOT tell user to turn on AI Helper
+      const { vault: failVault } = makeMockVault();
+      const failShotRes = await checkMessageWithAi({
+        text: '',
+        imageBase64: SAMPLE_JPEG_BASE64,
+        imageMime: 'image/jpeg',
+        settings: onSettings,
+        vault: failVault,
+        fetchFn: vi.fn(async () => new Response('Server error', { status: 500 })),
+      });
+      expect(failShotRes.ok).toBe(true);
+      if (failShotRes.ok) {
+        expect(failShotRes.checkedBy).toBe('device');
+        expect(failShotRes.verdict.value).toBe('caution');
+        expect(failShotRes.verdict.showAskFamily).toBe(true);
+        expect(failShotRes.verdict.instruction).toBe(
+          'Be careful and verify before clicking or paying'
+        );
+        expect(failShotRes.verdict.reasons.join(' ')).not.toMatch(
+          /turn on ai/i
+        );
+        expect(failShotRes.verdict.reasons.join(' ')).not.toMatch(
+          BANNED_JARGON
+        );
+      }
+
+      // Consent OFF on screenshot-only -> caution (never green safe)
+      expect(offRes.ok).toBe(true);
+      if (offRes.ok) {
+        expect(offRes.verdict.value).toBe('caution');
+        expect(offRes.verdict.showAskFamily).toBe(true);
+      }
     });
   });
 
@@ -818,6 +1030,163 @@ describe('Task 3: Gemini Vision Image Detection, Screenshot Scam Check & Email I
           expect(badge).toContain('aria-hidden="true"');
           expect(stripHtml(badge).length).toBeGreaterThan(0);
         }
+      }
+    });
+
+    it('AiMediaCheckPage preloaded-image effect does NOT overwrite a newly uploaded photo when Turn On AI Scanning updates settings', async () => {
+      const vault = createVault({ dbName: 'test_media_preload_no_overwrite_v1' });
+      const initialSettings: Settings = {
+        ...createDefaultSettings(),
+        allowAiReading: false,
+      };
+      await vault.saveSettings(initialSettings);
+
+      const stateSlots: unknown[] = [];
+      const refSlots: Array<{ current: unknown }> = [];
+      const effectPrevDeps: Array<readonly unknown[] | undefined> = [];
+      let stateCursor = 0;
+      let refCursor = 0;
+      let effectCursor = 0;
+      let queuedEffects: Array<() => void> = [];
+
+      const useStateSpy = vi.spyOn(React, 'useState').mockImplementation(((
+        init: unknown
+      ) => {
+        const idx = stateCursor++;
+        if (!(idx in stateSlots)) {
+          stateSlots[idx] =
+            typeof init === 'function' ? (init as () => unknown)() : init;
+        }
+        const setState = (next: unknown) => {
+          stateSlots[idx] =
+            typeof next === 'function'
+              ? (next as (prev: unknown) => unknown)(stateSlots[idx])
+              : next;
+        };
+        return [stateSlots[idx], setState];
+      }) as typeof React.useState);
+      const useRefSpy = vi.spyOn(React, 'useRef').mockImplementation(((
+        init: unknown
+      ) => {
+        const idx = refCursor++;
+        if (!(idx in refSlots)) {
+          refSlots[idx] = { current: init };
+        }
+        return refSlots[idx];
+      }) as typeof React.useRef);
+      const useMemoSpy = vi
+        .spyOn(React, 'useMemo')
+        .mockImplementation((fn) => fn());
+      const useCallbackSpy = vi
+        .spyOn(React, 'useCallback')
+        .mockImplementation((fn) => fn);
+      const useEffectSpy = vi
+        .spyOn(React, 'useEffect')
+        .mockImplementation((effect, deps) => {
+          const idx = effectCursor++;
+          const prevDeps = effectPrevDeps[idx];
+          const changed =
+            !prevDeps ||
+            !deps ||
+            prevDeps.length !== deps.length ||
+            deps.some((d, i) => !Object.is(d, prevDeps[i]));
+          if (changed) {
+            effectPrevDeps[idx] = deps ? [...deps] : undefined;
+            queuedEffects.push(effect as () => void);
+          }
+        });
+
+      const findEl = (
+        node: React.ReactNode,
+        pred: (el: React.ReactElement<Record<string, unknown>>) => boolean
+      ): React.ReactElement<Record<string, unknown>> | undefined => {
+        if (!node) return undefined;
+        if (Array.isArray(node)) {
+          for (const child of node) {
+            const hit = findEl(child, pred);
+            if (hit) return hit;
+          }
+          return undefined;
+        }
+        if (React.isValidElement(node)) {
+          const el = node as React.ReactElement<Record<string, unknown>>;
+          if (pred(el)) return el;
+          if (el.props && 'children' in el.props) {
+            return findEl(el.props.children as React.ReactNode, pred);
+          }
+        }
+        return undefined;
+      };
+
+      const renderTree = () => {
+        stateCursor = 0;
+        refCursor = 0;
+        effectCursor = 0;
+        queuedEffects = [];
+        const tree = AiMediaCheckPage({
+          initialSettings,
+          initialImageName: 'old-preloaded.jpg',
+          initialImageDataBase64: SAMPLE_JPEG_BASE64,
+          vault,
+        });
+        for (const eff of queuedEffects) eff();
+        return tree;
+      };
+
+      try {
+        // 1. Initial mount runs preloaded image check once
+        let tree = renderTree();
+        await new Promise((r) => setTimeout(r, 15));
+        tree = renderTree();
+
+        // 2. User uploads a different photo
+        const fileInput = findEl(
+          tree,
+          (el) => el.type === 'input' && el.props.id === 'media-check-file-input'
+        );
+        expect(fileInput).toBeDefined();
+        const uploadedBytes = encodeAsciiBytes('PNG Midjourney upload');
+        const fakeFile = {
+          name: 'new-upload.png',
+          type: 'image/png',
+          size: uploadedBytes.byteLength,
+          arrayBuffer: async () => uploadedBytes.buffer,
+        };
+        await (
+          fileInput!.props.onChange as (e: {
+            target: { files: unknown[] };
+          }) => Promise<void>
+        )({ target: { files: [fakeFile] } });
+
+        tree = renderTree();
+        expect(stateSlots[1]).toBe('new-upload.png');
+
+        // 3. User clicks "Turn On AI Scanning" -> settings updates in Vault & state
+        const turnOnBtn = findEl(
+          tree,
+          (el) =>
+            typeof el.props.onClick === 'function' &&
+            el.props.children === 'Turn On AI Scanning'
+        );
+        expect(turnOnBtn).toBeDefined();
+        await (turnOnBtn!.props.onClick as () => Promise<void>)();
+
+        // Re-render after settings updated -> selectedFileName MUST remain 'new-upload.png' (never overwritten by 'old-preloaded.jpg'!)
+        renderTree();
+        await new Promise((r) => setTimeout(r, 15));
+        expect(stateSlots[1]).toBe('new-upload.png');
+
+        const saved = await vault.getSettings();
+        expect(saved.ok).toBe(true);
+        if (saved.ok) {
+          expect(saved.value.allowAiReading).toBe(true);
+        }
+      } finally {
+        useEffectSpy.mockRestore();
+        useCallbackSpy.mockRestore();
+        useMemoSpy.mockRestore();
+        useRefSpy.mockRestore();
+        useStateSpy.mockRestore();
       }
     });
 

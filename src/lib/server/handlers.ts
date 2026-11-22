@@ -957,7 +957,8 @@ function sanitizeDecideOutput(
 
 function mergeScamCheckResult(
   candidate: Partial<ScamCheckOutput> | unknown,
-  baseline: ScamCheckOutput
+  baseline: ScamCheckOutput,
+  enforceBaselineMonotonicity = true
 ): ScamCheckOutput & { source: 'ai' | 'device' } {
   const sanitized = sanitizeVerdict(candidate);
   if (!sanitized) {
@@ -967,13 +968,15 @@ function mergeScamCheckResult(
   const baselineSeverity = VERDICT_SEVERITY[baseline.value];
   const candidateSeverity = VERDICT_SEVERITY[sanitized.value];
 
-  // Safety monotonicity: never downgrade deterministic danger or caution
-  if (candidateSeverity < baselineSeverity) {
+  // Safety monotonicity: never downgrade a deterministic text danger or caution verdict
+  if (enforceBaselineMonotonicity && candidateSeverity < baselineSeverity) {
     return { ...baseline, source: 'device' };
   }
 
   const raw = candidate as Record<string, unknown>;
-  const mergedFlags = Array.from(new Set([...baseline.flags, ...sanitized.flags]));
+  const mergedFlags = enforceBaselineMonotonicity
+    ? Array.from(new Set([...baseline.flags, ...sanitized.flags]))
+    : sanitized.flags;
   const instruction =
     typeof raw.instruction === 'string' && raw.instruction.trim().length > 0
       ? raw.instruction.trim().slice(0, 150)
@@ -988,7 +991,9 @@ function mergeScamCheckResult(
       ? true
       : typeof raw.showAskFamily === 'boolean'
         ? raw.showAskFamily
-        : baseline.showAskFamily;
+        : enforceBaselineMonotonicity
+          ? baseline.showAskFamily
+          : sanitized.value === 'caution';
 
   const merged: ScamCheckOutput & { source: 'ai' | 'device' } = {
     value: sanitized.value,
@@ -1288,12 +1293,13 @@ export function createScamCheckPostHandler(
       const baseline: ScamCheckOutput = hasText
         ? checkText(text)
         : {
-            value: 'safe',
+            value: 'caution',
             flags: [],
             reasons: [
-              'No clear scam signs were found on this device.',
+              'We could not read the words in this screenshot right now. Please paste the message text or ask a trusted family member before clicking or paying.',
             ],
-            showAskFamily: false,
+            instruction: 'Be careful and verify before clicking or paying',
+            showAskFamily: true,
           };
       let output: ScamCheckOutput & { source: 'ai' | 'device' } = {
         ...baseline,
@@ -1313,7 +1319,7 @@ export function createScamCheckPostHandler(
               }
             : text;
           const aiCandidate = await deps.scamChecker(checkerInput, apiKey);
-          output = mergeScamCheckResult(aiCandidate, baseline);
+          output = mergeScamCheckResult(aiCandidate, baseline, hasText);
         } catch {
           output = { ...baseline, source: 'device' };
         }

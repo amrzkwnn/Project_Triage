@@ -385,6 +385,10 @@ export function ScamShieldPage({
     setCheckError(undefined);
 
     if (!ALLOWED_SCREENSHOT_TYPES.has(file.type)) {
+      setScreenshotName(undefined);
+      setScreenshotBase64(undefined);
+      setScreenshotMime(undefined);
+      setScreenshotOcrText('');
       setCheckError(
         'Please choose a JPEG, PNG, or WebP screenshot up to 10 MB. Your message text is still here.'
       );
@@ -393,6 +397,10 @@ export function ScamShieldPage({
     }
 
     if (file.size > MAX_SCREENSHOT_BYTES) {
+      setScreenshotName(undefined);
+      setScreenshotBase64(undefined);
+      setScreenshotMime(undefined);
+      setScreenshotOcrText('');
       setCheckError(
         'That screenshot is larger than 10 MB. Please choose a smaller JPEG, PNG, or WebP screenshot.'
       );
@@ -401,6 +409,10 @@ export function ScamShieldPage({
     }
 
     if (file.size === 0) {
+      setScreenshotName(undefined);
+      setScreenshotBase64(undefined);
+      setScreenshotMime(undefined);
+      setScreenshotOcrText('');
       setCheckError(
         'We could not read that screenshot. Please retake the screenshot or paste the message text.'
       );
@@ -594,7 +606,7 @@ export function ScamShieldPage({
             <span aria-hidden="true" className="inline-flex shrink-0 text-brand">
               <Upload size={20} />
             </span>
-            <span>Choose Screenshot (JPEG or PNG, up to 10 MB)</span>
+            <span>Choose Screenshot (JPEG, PNG, or WebP, up to 10 MB)</span>
           </label>
           <input
             id="scam-screenshot-input"

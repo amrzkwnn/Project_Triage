@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React from 'react';
 import {
   AlertTriangle,
   Camera,
@@ -102,49 +102,64 @@ export function AiMediaCheckPage({
   const resolvedInitialImageName =
     initialImageName ?? readPreloadedMediaImageName(initialQuery);
 
-  const [settings, setSettings] = useState<Settings>(
+  const [settings, setSettings] = React.useState<Settings>(
     initialSettings ?? createDefaultSettings()
   );
-  const [selectedFileName, setSelectedFileName] = useState<string | undefined>(
-    resolvedInitialImageName
-  );
-  const [outcome, setOutcome] = useState<MediaCheckOutcome | undefined>(
+  const [selectedFileName, setSelectedFileName] = React.useState<
+    string | undefined
+  >(resolvedInitialImageName);
+  const [outcome, setOutcome] = React.useState<MediaCheckOutcome | undefined>(
     initialOutcome
   );
-  const [checkedBy, setCheckedBy] = useState<'ai' | 'device' | undefined>(
-    initialCheckedBy ?? (initialOutcome ? 'device' : undefined)
-  );
-  const [scamWarning, setScamWarning] = useState<Verdict | undefined>(
+  const [checkedBy, setCheckedBy] = React.useState<
+    'ai' | 'device' | undefined
+  >(initialCheckedBy ?? (initialOutcome ? 'device' : undefined));
+  const [scamWarning, setScamWarning] = React.useState<Verdict | undefined>(
     initialScamWarning
   );
-  const [checking, setChecking] = useState<boolean>(false);
-  const [checkNotice, setCheckNotice] = useState<string | undefined>(undefined);
-  const [uploadError, setUploadError] = useState<string | undefined>(
+  const [checking, setChecking] = React.useState<boolean>(false);
+  const [checkNotice, setCheckNotice] = React.useState<string | undefined>(
+    undefined
+  );
+  const [uploadError, setUploadError] = React.useState<string | undefined>(
     initialError
   );
-  const [confirmShareOpen, setConfirmShareOpen] = useState<boolean>(false);
-  const [statusMessage, setStatusMessage] = useState<string>('');
+  const [confirmShareOpen, setConfirmShareOpen] = React.useState<boolean>(false);
+  const [statusMessage, setStatusMessage] = React.useState<string>('');
+  const [settingsLoaded, setSettingsLoaded] = React.useState<boolean>(
+    initialSettings !== undefined
+  );
+  const settingsRef = React.useRef<Settings>(settings);
+  settingsRef.current = settings;
+  const preloadedCheckedKeyRef = React.useRef<string | undefined>(undefined);
 
-  const resolvedVault = useMemo(
+  const resolvedVault = React.useMemo(
     () => vault ?? (typeof window !== 'undefined' ? createVault() : undefined),
     [vault]
   );
 
-  const loadSettings = useCallback(async () => {
-    if (!resolvedVault) return;
-    const res = await resolvedVault.getSettings();
-    if (res.ok) {
-      setSettings(res.value);
+  const loadSettings = React.useCallback(async () => {
+    try {
+      if (!resolvedVault) return;
+      const res = await resolvedVault.getSettings();
+      if (res.ok) {
+        settingsRef.current = res.value;
+        setSettings(res.value);
+      }
+    } finally {
+      setSettingsLoaded(true);
     }
   }, [resolvedVault]);
 
-  useEffect(() => {
+  React.useEffect(() => {
     if (initialSettings === undefined) {
       void loadSettings();
+    } else {
+      setSettingsLoaded(true);
     }
   }, [initialSettings, loadSettings]);
 
-  const runPhotoCheck = useCallback(
+  const runPhotoCheck = React.useCallback(
     async (
       bytes: Uint8Array,
       mimeType: string,
@@ -184,10 +199,17 @@ export function AiMediaCheckPage({
     [resolvedVault, fetchFn]
   );
 
-  useEffect(() => {
+  React.useEffect(() => {
+    if (!settingsLoaded) return;
     const preloadedName =
       initialImageName ?? readPreloadedMediaImageName(initialQuery);
     if (!preloadedName) return;
+
+    const preloadKey = `${preloadedName}:${initialImageDataBase64 ?? ''}:${initialImageMime ?? ''}:${initialQuery ?? ''}`;
+    if (preloadedCheckedKeyRef.current === preloadKey) {
+      return;
+    }
+    preloadedCheckedKeyRef.current = preloadKey;
 
     setSelectedFileName(preloadedName);
     if (initialOutcome) return;
@@ -218,17 +240,17 @@ export function AiMediaCheckPage({
     if (base64) {
       const bytes = base64ToUint8Array(base64);
       if (bytes && bytes.length > 0) {
-        void runPhotoCheck(bytes, mimeType, preloadedName, settings);
+        void runPhotoCheck(bytes, mimeType, preloadedName, settingsRef.current);
       }
     }
   }, [
+    settingsLoaded,
     initialImageName,
     initialImageDataBase64,
     initialImageMime,
     initialQuery,
     initialOutcome,
     runPhotoCheck,
-    settings,
   ]);
 
   const handleTurnOnAiScanning = async () => {

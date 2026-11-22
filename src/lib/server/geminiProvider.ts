@@ -1,4 +1,10 @@
-import type { CalendarCategory, Channel, Verdict } from '@/lib/types';
+import type {
+  CalendarCategory,
+  Channel,
+  RedFlagCategory,
+  Verdict,
+  VerdictValue,
+} from '@/lib/types';
 import type { Candidate } from '@/lib/calendar/ocr';
 import type { MediaCheckOutcome } from '@/lib/media/result';
 import type { ScamCheckOutput } from '@/lib/scam/verdict';
@@ -268,6 +274,19 @@ function buildGeminiPrompt(item: { channel: Channel; text: string }): string {
   ].join('\n');
 }
 
+const VALID_VERDICT_VALUES = new Set<VerdictValue>([
+  'safe',
+  'caution',
+  'danger',
+]);
+
+const VALID_RED_FLAGS = new Set<RedFlagCategory>([
+  'urgency',
+  'secrecy',
+  'payment',
+  'domain-mismatch',
+]);
+
 function stripForbiddenCertainty(value: string): string {
   return value
     .replace(FORBIDDEN_CERTAINTY_PATTERN, '')
@@ -275,13 +294,53 @@ function stripForbiddenCertainty(value: string): string {
     .trim();
 }
 
+function sanitizeGeminiVerdict(raw: unknown): Verdict | undefined {
+  if (!isPlainObject(raw)) {
+    return undefined;
+  }
+  if (
+    typeof raw.value !== 'string' ||
+    !VALID_VERDICT_VALUES.has(raw.value as VerdictValue)
+  ) {
+    return undefined;
+  }
+  const reasons = Array.isArray(raw.reasons)
+    ? raw.reasons
+        .filter((r): r is string => typeof r === 'string' && r.trim().length > 0)
+        .map((r) => stripForbiddenCertainty(r).slice(0, 150))
+        .filter((r) => r.length > 0)
+        .slice(0, 3)
+    : [];
+  if (reasons.length === 0) {
+    return undefined;
+  }
+  const flags = Array.isArray(raw.flags)
+    ? Array.from(
+        new Set(
+          raw.flags.filter(
+            (f): f is RedFlagCategory =>
+              typeof f === 'string' &&
+              VALID_RED_FLAGS.has(f as RedFlagCategory)
+          )
+        )
+      )
+    : [];
+  return {
+    value: raw.value as VerdictValue,
+    flags,
+    reasons,
+  };
+}
+
 function buildGeminiScamPrompt(text: string, hasImage: boolean): string {
   const lines = [
     'You are a calm, protective scam-safety companion helping an older adult check a suspicious message or screenshot.',
-    hasImage
-      ? 'Read ALL visible words, sender details, web links, QR codes, bank details, and urgent demands inside the attached screenshot image as well as any pasted text below.'
-      : 'Check carefully for obvious AND subtle scams: fake relatives ("Hi Mum, new number"), bank or parcel impersonation, romance or lottery tricks, urgent pressure, secrecy requests, unusual payment demands, or mismatched web links.',
-    'Check carefully for fake relatives ("Hi Mum, new number"), bank or parcel impersonation, romance or lottery tricks, urgent pressure, secrecy requests, unusual payment demands, or mismatched web links.',
+    ...(hasImage
+      ? [
+          'Read ALL visible words, sender details, web links, QR codes, bank details, and urgent demands inside the attached screenshot image as well as any pasted text below.',
+        ]
+      : []),
+    'Check carefully for obvious AND subtle scams: fake relatives ("Hi Mum, new number"), bank or parcel impersonation, romance or lottery tricks, urgent pressure, secrecy requests, unusual payment demands, or mismatched web links.',
     'Write in warm, clear, plain language. Never use technical jargon (never use words like sync, token, api, cache, oauth, webhook, regex, payload, or endpoint).',
     'Return JSON matching the required schema:',
     '- value: "danger" for likely scams or clear manipulation, "caution" when something feels suspicious and should be verified first, or "safe" when no warning signs appear.',
@@ -496,9 +555,9 @@ export function createGeminiScamChecker(deps?: {
       deps?.model?.trim() || getEnvVar('GEMINI_MODEL') || DEFAULT_GEMINI_MODEL;
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`;
 
-    const effectiveTimeout = hasImage
-      ? Math.max(timeoutMs, DEFAULT_GEMINI_VISION_TIMEOUT_MS)
-      : timeoutMs;
+    const effectiveTimeout =
+      deps?.timeoutMs ??
+      (hasImage ? DEFAULT_GEMINI_VISION_TIMEOUT_MS : DEFAULT_GEMINI_TIMEOUT_MS);
     const controller = new AbortController();
     const timer = setTimeout(() => {
       controller.abort();
@@ -795,8 +854,9 @@ export function createGeminiMediaChecker(deps?: {
             ? cleanNote
             : 'Visual clues were reviewed, but no tool can prove a photo is authentic.';
       }
-      if (isPlainObject(parsed.scamWarning)) {
-        output.scamWarning = parsed.scamWarning as unknown as Verdict;
+      const sanitizedWarning = sanitizeGeminiVerdict(parsed.scamWarning);
+      if (sanitizedWarning) {
+        output.scamWarning = sanitizedWarning;
       }
 
       return output;
