@@ -567,6 +567,28 @@ describe('Task 3: AI-Powered Scam Checking & Enriched /api/decide', () => {
       expect(entries).toHaveLength(0);
     });
 
+    it('aborts with zero fetch calls when allowAiReading is true and vault is undefined (Property 7)', async () => {
+      const settings: Settings = {
+        ...createDefaultSettings(),
+        allowAiReading: true,
+      };
+      const fetchFn = vi.fn<typeof fetch>();
+
+      const res = await checkMessageWithAi({
+        text: 'Check this message without a vault.',
+        settings,
+        vault: undefined,
+        fetchFn,
+      });
+
+      expect(res.ok).toBe(false);
+      if (!res.ok) {
+        expect(res.message.length).toBeGreaterThan(0);
+        expect(res.message).not.toMatch(BANNED_JARGON);
+      }
+      expect(fetchFn).not.toHaveBeenCalled();
+    });
+
     it('falls back to on-device verdict on HTTP 500 and never downgrades deterministic danger client-side', async () => {
       const settings: Settings = {
         ...createDefaultSettings(),

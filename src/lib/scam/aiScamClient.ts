@@ -152,21 +152,19 @@ export async function checkMessageWithAi(params: {
     purpose: 'Check message for scam warning signs',
   });
 
-  if (!builtAudit.ok) {
+  if (!builtAudit.ok || !params.vault) {
     return {
       ok: false,
       message: AUDIT_FAILED_MESSAGE,
     };
   }
 
-  if (params.vault) {
-    const auditWrite = await params.vault.appendAudit(builtAudit.value);
-    if (!auditWrite.ok) {
-      return {
-        ok: false,
-        message: AUDIT_FAILED_MESSAGE,
-      };
-    }
+  const auditWrite = await params.vault.appendAudit(builtAudit.value);
+  if (!auditWrite.ok) {
+    return {
+      ok: false,
+      message: AUDIT_FAILED_MESSAGE,
+    };
   }
 
   const fetchFn = params.fetchFn ?? globalThis.fetch;
