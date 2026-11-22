@@ -219,20 +219,14 @@ describe('Accessibility, Touch Targets, Dual-Modality Badges, Copy & Bundle Safe
     },
   ];
 
-  it('renders all 7 screens with BackToHome on every non-home screen, min-h-[56px] buttons with text labels, dual-modality badges, and zero banned jargon', () => {
+  it('renders all 7 screens with no Back to Home control, min-h-[56px] buttons with text labels, dual-modality badges, and zero banned jargon', () => {
     for (const screen of screens) {
       const html = renderToStaticMarkup(screen.element);
 
-      // 1. BackToHome present on every non-home screen, absent on HomeHub
-      if (screen.isHome) {
-        expect(html, `${screen.name} should not show BackToHome`).not.toContain(
-          '← Back to Home'
-        );
-      } else {
-        expect(html, `${screen.name} must render BackToHome`).toContain(
-          '← Back to Home'
-        );
-      }
+      // 1. No screen renders a Back to Home control
+      expect(html, `${screen.name} should not show Back to Home`).not.toContain(
+        'Back to Home'
+      );
 
       // 2. Every interactive <button> must carry min-h-[56px] and visible text label
       const buttons = extractButtonTags(html);

@@ -22,7 +22,6 @@ import {
   Users,
   X,
 } from 'lucide-react';
-import { BackToHome } from '@/components/BackToHome';
 import { EmptyState } from '@/components/EmptyState';
 import { FilterChips, type FilterChipItem } from '@/components/FilterChips';
 import { PriorityPill } from '@/components/PriorityPill';
@@ -774,15 +773,6 @@ export function UnifiedInboxPage({
     }
   }, [initialQuery]);
 
-  const handleBack = (
-    event: React.MouseEvent<HTMLAnchorElement | HTMLButtonElement>
-  ) => {
-    if (onNavigate) {
-      event.preventDefault();
-      onNavigate('/');
-    }
-  };
-
   const visibleCategories = React.useMemo(
     () => getVisibleInboxCategories(settings),
     [settings]
@@ -1221,8 +1211,6 @@ export function UnifiedInboxPage({
 
   return (
     <div className="space-y-7 pb-6">
-      <BackToHome onClick={handleBack} />
-
       <section className="space-y-3">
         <h1 className="text-[28px] font-bold leading-tight tracking-tight text-ink">
           Unified Inbox

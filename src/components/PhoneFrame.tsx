@@ -23,11 +23,11 @@ export function PhoneFrame({ children }: PhoneFrameProps) {
   const [portal, setPortal] = useState<HTMLElement | null>(null);
 
   return (
-    <div className="min-h-screen w-full bg-canvas flex justify-center">
+    <div className="flex h-screen h-[100dvh] max-h-[100dvh] w-full justify-center overflow-hidden bg-canvas">
       <div
         ref={setPortal}
         data-phone-screen="true"
-        className="relative flex min-h-screen w-full max-w-[430px] flex-col overflow-hidden bg-canvas shadow-card sm:border-x sm:border-line"
+        className="relative flex h-full max-h-[100dvh] w-full max-w-[430px] flex-col overflow-hidden bg-canvas shadow-card sm:border-x sm:border-line"
         style={{
           paddingTop: 'env(safe-area-inset-top, 0px)',
           paddingBottom: 'env(safe-area-inset-bottom, 0px)',

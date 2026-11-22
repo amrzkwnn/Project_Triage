@@ -13,7 +13,6 @@ import {
   Users,
   X,
 } from 'lucide-react';
-import { BackToHome } from '@/components/BackToHome';
 import { SeniorButton } from '@/components/SeniorButton';
 import { StatusLive } from '@/components/StatusLive';
 import {
@@ -398,15 +397,6 @@ export function MyDataPage({
     [auditEntries]
   );
 
-  const handleBackClick = (
-    event: React.MouseEvent<HTMLAnchorElement | HTMLButtonElement>
-  ) => {
-    if (onNavigate) {
-      event.preventDefault();
-      onNavigate('/');
-    }
-  };
-
   const handleChannelToggle = async (channel: Channel) => {
     const nextEnabled = !settings.channels[channel];
     setToggleError(undefined);
@@ -657,8 +647,6 @@ export function MyDataPage({
 
   return (
     <div className="space-y-7 pb-6">
-      <BackToHome onClick={handleBackClick} />
-
       <section className="relative overflow-hidden rounded-card border border-brand-soft/70 bg-gradient-to-br from-brand-soft via-brand-wash to-white p-5 shadow-lift anim-fade-up">
         <div
           aria-hidden="true"

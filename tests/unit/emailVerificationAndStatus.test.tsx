@@ -1,7 +1,6 @@
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it, vi } from 'vitest';
-import { BackToHome } from '@/components/BackToHome';
 import { SeniorButton } from '@/components/SeniorButton';
 import { MyDataPage } from '@/app/my-data/page';
 import { UnifiedInboxPage } from '@/app/inbox/page';
@@ -748,16 +747,6 @@ function createHookHarness() {
 }
 
 describe('Task 2: Truthful Connection Badge, Disconnect, Auto-Check, Live Inbox Status Card & 1-Arrow Back Button', () => {
-  describe('BackToHome 1-arrow fix', () => {
-    it('renders exactly 1 arrow (← Back to Home) and NO <svg inside it', () => {
-      const html = renderToStaticMarkup(<BackToHome />);
-      expect(html).toContain('← Back to Home');
-      expect(html).not.toContain('<svg');
-      const arrowMatches = html.match(/←/g) ?? [];
-      expect(arrowMatches).toHaveLength(1);
-    });
-  });
-
   describe('MyDataPage truthful connection badge, auto-check, and disconnect', () => {
     it('renders "Not connected yet" badge by default (dual-modality + border-2) with zero banned jargon', () => {
       const html = renderToStaticMarkup(

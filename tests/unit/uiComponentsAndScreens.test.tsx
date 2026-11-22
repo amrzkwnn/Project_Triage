@@ -21,7 +21,6 @@ import { SourceBadge } from '@/components/SourceBadge';
 import { PriorityPill } from '@/components/PriorityPill';
 import { DecisionConfirmCard } from '@/components/DecisionConfirmCard';
 import { StatusLive } from '@/components/StatusLive';
-import { BackToHome } from '@/components/BackToHome';
 import { PrivacyPill } from '@/components/PrivacyPill';
 import manifest from '@/app/manifest';
 import { AppShell, probeStoreUnavailable } from '@/app/layout';
@@ -267,13 +266,6 @@ describe('Shared Accessible UI Components', () => {
     expect(html).not.toContain('tabindex');
   });
 
-  it('BackToHome renders persistent "← Back to Home" control with min-h-[56px] linking to /', () => {
-    const html = renderToStaticMarkup(<BackToHome />);
-    expect(html).toContain('← Back to Home');
-    expect(html).toContain('min-h-[56px]');
-    expect(html).toContain('href="/"');
-  });
-
   it('PrivacyPill displays enabled source count and AI On/Off and links to /my-data', () => {
     const settings: Settings = {
       ...createDefaultSettings(),
@@ -390,7 +382,7 @@ describe('PWA Manifest, App Shell, Home Hub, and My Data Screen', () => {
     }
   });
 
-  it('MyDataPage renders BackToHome, 5 channel toggles, AI confirmation, caregiver toggle, audit log, download, and two-step erase', () => {
+  it('MyDataPage renders no Back to Home, 5 channel toggles, AI confirmation, caregiver toggle, audit log, download, and two-step erase', () => {
     const emptyAuditHtml = renderToStaticMarkup(
       <MyDataPage
         initialSettings={createDefaultSettings()}
@@ -400,7 +392,7 @@ describe('PWA Manifest, App Shell, Home Hub, and My Data Screen', () => {
         initialEraseStep={1}
       />
     );
-    expect(emptyAuditHtml).toContain('← Back to Home');
+    expect(emptyAuditHtml).not.toContain('Back to Home');
     expect(emptyAuditHtml).toContain('Email');
     expect(emptyAuditHtml).toContain('WhatsApp');
     expect(emptyAuditHtml).toContain('SMS');

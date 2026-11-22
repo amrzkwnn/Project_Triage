@@ -143,7 +143,7 @@ export function AppShell({
             Skip to main content
           </a>
 
-          <header className="chrome shrink-0 border-b border-line bg-white/90 px-4 py-2.5 backdrop-blur-md">
+          <header data-shell-layer="top" className="chrome relative z-30 shrink-0 border-b border-line bg-white/95 px-4 py-2.5 backdrop-blur-md">
             <div className="flex items-center justify-between gap-2">
               <a
                 href="/"
@@ -172,7 +172,7 @@ export function AppShell({
             </div>
           </header>
 
-          <div className="app-scroll min-h-0 flex-1 bg-canvas px-5 pb-6 pt-3">
+          <div data-shell-layer="content" className="app-scroll min-h-0 flex-1 overflow-y-auto overscroll-contain bg-canvas px-5 pb-6 pt-3">
             {(offline || isStoreUnavailable) && (
               <div className="mb-4 space-y-3">
                 {offline ? (

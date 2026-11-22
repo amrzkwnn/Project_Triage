@@ -12,7 +12,6 @@ import {
   Sparkles,
   Upload,
 } from 'lucide-react';
-import { BackToHome } from '@/components/BackToHome';
 import { SeniorButton } from '@/components/SeniorButton';
 import { StatusLive } from '@/components/StatusLive';
 import { TrafficLightCard } from '@/components/TrafficLightCard';
@@ -257,15 +256,6 @@ export function ScamShieldPage({
       }
     }
   }, [initialText, initialQuery, screenshotName, screenshotOcrText]);
-
-  const handleBack = (
-    event: React.MouseEvent<HTMLAnchorElement | HTMLButtonElement>
-  ) => {
-    if (onNavigate) {
-      event.preventDefault();
-      onNavigate('/');
-    }
-  };
 
   const handleTurnOnAiScanning = async () => {
     let baseSettings = settings;
@@ -553,8 +543,6 @@ export function ScamShieldPage({
 
   return (
     <div className="space-y-7 pb-6">
-      <BackToHome onClick={handleBack} />
-
       <section className="space-y-2">
         <h1 className="text-[28px] font-bold leading-tight tracking-tight text-ink">
           Scam Shield

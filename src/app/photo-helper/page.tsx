@@ -12,7 +12,6 @@ import {
   Sparkles,
   Trash2,
 } from 'lucide-react';
-import { BackToHome } from '@/components/BackToHome';
 import { SeniorButton } from '@/components/SeniorButton';
 import { StatusLive } from '@/components/StatusLive';
 import { StepWizard } from '@/components/StepWizard';
@@ -136,15 +135,6 @@ export function PhotoHelperPage({
     }
   }, [initialSettings, loadSettings]);
 
-  const handleBack = (
-    event: React.MouseEvent<HTMLAnchorElement | HTMLButtonElement>
-  ) => {
-    if (onNavigate) {
-      event.preventDefault();
-      onNavigate('/');
-    }
-  };
-
   const handleTurnOnPhotos = async () => {
     if (!resolvedVault) {
       setSettings((prev) => ({
@@ -248,8 +238,6 @@ export function PhotoHelperPage({
 
   return (
     <div className="space-y-7 pb-6">
-      <BackToHome onClick={handleBack} />
-
       <section className="space-y-2">
         <h1 className="text-[28px] font-bold leading-tight tracking-tight text-ink">
           Photo Helper

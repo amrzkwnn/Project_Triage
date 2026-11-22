@@ -22,7 +22,6 @@ import {
   Users,
   X,
 } from 'lucide-react';
-import { BackToHome } from '@/components/BackToHome';
 import { EmptyState } from '@/components/EmptyState';
 import { MonthCalendar } from '@/components/MonthCalendar';
 import { SegmentedControl } from '@/components/SegmentedControl';
@@ -363,15 +362,6 @@ export function CalendarPage({
       void loadData();
     }
   }, [initialSettings, initialEvents, initialInboxItems, loadData]);
-
-  const handleBack = (
-    event: React.MouseEvent<HTMLAnchorElement | HTMLButtonElement>
-  ) => {
-    if (onNavigate) {
-      event.preventDefault();
-      onNavigate('/');
-    }
-  };
 
   const todayEvents = React.useMemo(
     () => viewToday(events, selectedDate),
@@ -947,8 +937,6 @@ export function CalendarPage({
 
   return (
     <div className="space-y-6 pb-6">
-      <BackToHome onClick={handleBack} />
-
       <section className="space-y-3">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="min-w-0">

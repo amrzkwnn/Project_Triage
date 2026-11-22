@@ -49,6 +49,10 @@ export function CompanionApp() {
     if (typeof window !== 'undefined') {
       window.history.pushState(null, '', `${next.pathname}${next.search}`);
       window.scrollTo({ top: 0, behavior: 'auto' });
+      const contentLayer = document.querySelector('[data-shell-layer="content"]');
+      if (contentLayer) {
+        contentLayer.scrollTop = 0;
+      }
     }
     setLocationState(next);
   }, []);

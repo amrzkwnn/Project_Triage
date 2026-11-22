@@ -10,7 +10,6 @@ import { TrafficLightCard } from '@/components/TrafficLightCard';
 import { StepWizard } from '@/components/StepWizard';
 import { PrivacyPill } from '@/components/PrivacyPill';
 import { StatusLive } from '@/components/StatusLive';
-import { BackToHome } from '@/components/BackToHome';
 import { isValidConfirmation, type Confirmation } from '@/lib/actions/confirmation';
 import { createDefaultSettings } from '@/lib/types';
 import { PhoneFrame } from '@/components/PhoneFrame';
@@ -273,10 +272,6 @@ describe('Task 1: Syed Design Tokens and Core Components', () => {
     expect(statusHtml).toContain('border-brand-soft');
     expect(statusHtml).toContain('bg-brand-wash');
 
-    const backHtml = renderToStaticMarkup(<BackToHome />);
-    expect(backHtml).toContain('pressable');
-    expect(backHtml).toContain('rounded-full');
-    expect(backHtml).toContain('min-h-[56px]');
   });
 });
 
@@ -714,7 +709,7 @@ describe('Task 5: Syed Visual Design on Inbox, ScamShield, MediaCheck, PhotoHelp
     expect(html).toContain('AI summary');
     expect(html).toContain('rounded-card');
     expect(html).toContain('shadow-card');
-    expect(html).toContain('← Back to Home');
+    expect(html).not.toContain('Back to Home');
 
     const emptyHtml = renderToStaticMarkup(
       <UnifiedInboxPage initialSettings={createDefaultSettings()} initialItems={[]} />

@@ -50,8 +50,9 @@ export function TabBar({ activePath = '/', onNavigate }: TabBarProps) {
 
   return (
     <nav
+      data-shell-layer="bottom"
       aria-label="App navigation"
-      className="chrome relative z-20 shrink-0 border-t border-line bg-white/80 backdrop-blur-xl"
+      className="chrome relative z-30 shrink-0 border-t border-line bg-white/95 backdrop-blur-xl"
       style={{ paddingBottom: 18 }}
     >
       <div className="flex items-end justify-around px-1.5 pt-1.5">
